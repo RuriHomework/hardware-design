@@ -1,0 +1,24 @@
+# Scala / sbt
+target/
+.bsp/
+project/target/
+project/project/
+
+# IDE
+.idea/
+.vscode/
+.metals/
+.bloop/
+*.worksheet.sc
+
+# Generated artifacts
+build/
+*.vcd
+*.fir
+*.anno.json
+
+# macOS
+.DS_Store
+
+# Nix
+result
