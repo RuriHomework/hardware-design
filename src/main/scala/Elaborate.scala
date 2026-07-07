@@ -8,7 +8,6 @@ object Elaborate extends App {
     case _ => "Top"
   }
   val mod: () => Module = target match {
-    case "Counter"   => () => new Counter
     case "Top"       => () => new top.Top
     case "Core"      => () => new top.Core
     case "Fetch"     => () => new core.frontend.Fetch
