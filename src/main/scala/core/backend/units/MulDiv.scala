@@ -36,14 +36,9 @@ class MulDiv extends Module {
   val b    = RegInit(0.U(XLen.W))
 
   // 乘法子结果
-  val mulP = WireInit(0.U((2 * XLen).W))
-  // MULHU: 无符号×无符号
-  mulP := a * b
-  // MULHSU: a 有符号, b 无符号
-  val aSext = a.asSInt
-  val mulHSU = (aSext * b.asSInt).asUInt  // b 视为无符号但参与 SInt 乘法需注意
-  // MULH: 有符号×有符号
-  val mulH = (aSext * b.asSInt).asUInt
+  val mulUU = a * b
+  val mulSS = (a.asSInt * b.asSInt).asUInt
+  val mulHSU = (Cat(a(XLen - 1), a).asSInt * Cat(0.U(1.W), b).asSInt).asUInt
 
   // 除法：非恢复余数法，32 周期
   val divCount = RegInit(0.U(6.W))
@@ -92,10 +87,10 @@ class MulDiv extends Module {
       // 乘法：单周期完成
       io.done := true.B
       switch(uop) {
-        is(MUL)    { io.result := mulP(XLen - 1, 0) }
-        is(MULH)   { io.result := mulH(2 * XLen - 1, XLen) }
+        is(MUL)    { io.result := mulUU(XLen - 1, 0) }
+        is(MULH)   { io.result := mulSS(2 * XLen - 1, XLen) }
         is(MULHSU) { io.result := mulHSU(2 * XLen - 1, XLen) }
-        is(MULHU)  { io.result := mulP(2 * XLen - 1, XLen) }
+        is(MULHU)  { io.result := mulUU(2 * XLen - 1, XLen) }
       }
       busy := false.B
     }.otherwise {

@@ -70,14 +70,15 @@ class Backend extends Module {
   // ===== Dispatch: rename + 分配 =====
   val dispatchValid = io.dispatch.valid
   val instr = io.dispatch.instr
+  val instrWritesReg = instr.writesReg && instr.rd =/= 0.U
 
   // rename 查询
   rmt.io.rs1 := instr.rs1
   rmt.io.rs2 := instr.rs2
   rmt.io.rd := instr.rd
-  rmt.io.writesReg := instr.writesReg
+  rmt.io.writesReg := instrWritesReg
   rmt.io.newPdst := free.io.allocPdst
-  rmt.io.update := dispatchValid && instr.writesReg && free.io.allocAvail && rob.io.enqReady
+  rmt.io.update := dispatchValid && instrWritesReg && free.io.allocAvail && rob.io.enqReady
   rmt.io.rollback := rob.io.rollback
 
   // ready 查询：用 PhysRegReady（以 pdst 为键）
@@ -87,18 +88,18 @@ class Backend extends Module {
   val rs2ReadyVal = Mux(instr.usesRs2, ready.io.ready2, true.B)
 
   // FreeList 分配
-  free.io.allocReq := dispatchValid && instr.writesReg && rob.io.enqReady
+  free.io.allocReq := dispatchValid && instrWritesReg && rob.io.enqReady
   free.io.freeReq  := rob.io.freeReq
   free.io.freePdst := rob.io.freePdst
 
   // ROB 入队
-  rob.io.enq.valid := dispatchValid && free.io.allocAvail && rob.io.enqReady
+  rob.io.enq.valid := dispatchValid && (!instrWritesReg || free.io.allocAvail) && rob.io.enqReady
   rob.io.enq.bits.uop        := instr.uop
   rob.io.enq.bits.pc         := instr.pc
   rob.io.enq.bits.rd         := instr.rd
-  rob.io.enq.bits.pdst       := free.io.allocPdst
+  rob.io.enq.bits.pdst       := Mux(instrWritesReg, free.io.allocPdst, 0.U)
   rob.io.enq.bits.stalePdst  := rmt.io.stalePdst
-  rob.io.enq.bits.writesReg  := instr.writesReg
+  rob.io.enq.bits.writesReg  := instrWritesReg
   rob.io.enq.bits.predTaken  := instr.predTaken
   rob.io.enq.bits.predTarget := instr.predTarget
 
@@ -107,7 +108,7 @@ class Backend extends Module {
   issue.io.enq.bits.uop        := instr.uop
   issue.io.enq.bits.pc         := instr.pc
   issue.io.enq.bits.rd         := instr.rd
-  issue.io.enq.bits.pdst       := free.io.allocPdst
+  issue.io.enq.bits.pdst       := Mux(instrWritesReg, free.io.allocPdst, 0.U)
   issue.io.enq.bits.prs1       := rmt.io.rs1Pdst
   issue.io.enq.bits.prs2       := rmt.io.rs2Pdst
   issue.io.enq.bits.rs1Ready   := rs1ReadyVal
@@ -139,40 +140,45 @@ class Backend extends Module {
   // 仲裁：ALU > BRU > LSU > MulDiv
   cdb.valid := false.B
   cdb.bits := 0.U.asTypeOf(new CdbEntry)
+  val cdbWritesReg = WireDefault(false.B)
   when(aluDone) {
     cdb.valid := true.B
     cdb.bits.pdst := issue.io.deq.bits.pdst
     cdb.bits.data := alu.io.out
     cdb.bits.robIdx := issue.io.deq.bits.robIdx
+    cdbWritesReg := UopKind.writesReg(issue.io.deq.bits.uop)
   }.elsewhen(bruDone) {
     cdb.valid := true.B
     cdb.bits.pdst := issue.io.deq.bits.pdst
     cdb.bits.data := 0.U  // BRU 不写寄存器（JAL 的 rd 由 ALU 写）
     cdb.bits.robIdx := issue.io.deq.bits.robIdx
+    cdbWritesReg := false.B
   }.elsewhen(lsuDone) {
     cdb.valid := true.B
     cdb.bits.pdst := issue.io.deq.bits.pdst
     cdb.bits.data := lsu.io.result
     cdb.bits.robIdx := issue.io.deq.bits.robIdx
+    cdbWritesReg := UopKind.writesReg(issue.io.deq.bits.uop)
   }.elsewhen(mduDone) {
     cdb.valid := true.B
     cdb.bits.pdst := issue.io.deq.bits.pdst
     cdb.bits.data := mdu.io.result
     cdb.bits.robIdx := issue.io.deq.bits.robIdx
+    cdbWritesReg := UopKind.writesReg(issue.io.deq.bits.uop)
   }
 
   // IssueQueue 监听 CDB
   issue.io.cdb := cdb
 
   // PRF 写回
-  prf.io.wen   := cdb.valid && cdb.bits.pdst =/= 0.U
+  prf.io.wen   := cdb.valid && cdbWritesReg && cdb.bits.pdst =/= 0.U
   prf.io.waddr := cdb.bits.pdst
   prf.io.wdata := cdb.bits.data
 
   // ready array：写回时置位；dispatch 分配新 pdst 时清 ready
-  ready.io.setReady.valid := cdb.valid
+  ready.io.setReady.valid := cdb.valid && cdbWritesReg
   ready.io.setReady.bits  := cdb.bits.pdst
-  ready.io.clearReady.valid := issue.io.enq.valid
+  ready.io.clearReady.valid := issue.io.enq.valid && instrWritesReg
   ready.io.clearReady.bits  := free.io.allocPdst
 
   // ===== 执行单元派发 =====
@@ -184,7 +190,7 @@ class Backend extends Module {
   mduDone := false.B
 
   alu.io.uop := deq.bits.uop
-  alu.io.a   := deq.bits.a
+  alu.io.a   := Mux(deq.bits.uop === AUIPC, deq.bits.pc, deq.bits.a)
   // b 选择：LUI/AUIPC → imm；I型算术(usesRs2=false) → imm；R型 → rs2 数据
   alu.io.b   := Mux(deq.bits.uop === LUI || deq.bits.uop === AUIPC || !deq.bits.usesRs2,
                     deq.bits.imm.asUInt, deq.bits.b)
@@ -213,8 +219,12 @@ class Backend extends Module {
   mdu.io.cmd.bits.a   := deq.bits.a
   mdu.io.cmd.bits.b   := deq.bits.b
 
+  val deqIsLsu = deq.valid && Lsu.accepts(deq.bits.uop)
+  val deqIsMdu = deq.valid && MulDiv.accepts(deq.bits.uop)
+  issue.io.deqReady := !(deqIsLsu && lsu.io.busy) && !(deqIsMdu && mdu.io.busy)
+
   // 派发逻辑：根据 uop 路由到对应单元
-  when(deq.valid) {
+  when(deq.valid && issue.io.deqReady) {
     when(Alu.accepts(deq.bits.uop)) {
       aluDone := true.B
     }.elsewhen(Bru.accepts(deq.bits.uop)) {
@@ -267,7 +277,7 @@ class Backend extends Module {
   // ===== dispatchReady =====
   // ROB 有空 + (不写寄存器 或 FreeList 有空) + IssueQueue 有空
   io.dispatchReady := rob.io.enqReady && issue.io.enqReady &&
-    (!instr.writesReg || free.io.allocAvail)
+    (!instrWritesReg || free.io.allocAvail)
 
   // ===== 调试：commit 时的 rd + data =====
   prf.io.dbgRaddr := rob.io.commit.bits.pdst

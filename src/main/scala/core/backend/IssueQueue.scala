@@ -52,6 +52,7 @@ class IssueQueue extends Module {
       val predTarget = UInt(PcWidth.W)
       val robIdx = UInt(RobIdWidth.W)
     })
+    val deqReady = Input(Bool())
 
     // PRF 读口
     val prf = new Bundle {
@@ -92,7 +93,6 @@ class IssueQueue extends Module {
   }
 
   val entries = RegInit(VecInit(Seq.fill(IssueEntries)(0.U.asTypeOf(new QEntry))))
-  val head = RegInit(0.U(log2Ceil(IssueEntries).W))
   val count = RegInit(0.U((log2Ceil(IssueEntries) + 1).W))
 
   // CDB 监听：更新所有项的 ready 位
@@ -112,7 +112,6 @@ class IssueQueue extends Module {
   when(io.flush.valid) {
     for (e <- entries) { e.valid := false.B }
     count := 0.U
-    head  := 0.U
   }
 
   // 找第一个就绪项
@@ -147,7 +146,10 @@ class IssueQueue extends Module {
   }
 
   // 入队
-  val canEnq = count < IssueEntries.U
+  val freeMask = entries.map(e => !e.valid)
+  val hasFree = freeMask.reduce(_ || _)
+  val enqIdx = PriorityEncoder(freeMask)
+  val canEnq = count < IssueEntries.U && hasFree
   io.enqReady := canEnq && !io.flush.valid
 
   // enq 时如果 CDB 同周期广播且匹配，直接置 ready
@@ -157,7 +159,7 @@ class IssueQueue extends Module {
                      io.enq.bits.prs2 === io.cdb.bits.pdst
 
   when(io.enq.valid && canEnq && !io.flush.valid) {
-    val idx = head
+    val idx = enqIdx
     entries(idx).valid      := true.B
     entries(idx).uop        := io.enq.bits.uop
     entries(idx).pc         := io.enq.bits.pc
@@ -173,17 +175,17 @@ class IssueQueue extends Module {
     entries(idx).predTaken  := io.enq.bits.predTaken
     entries(idx).predTarget := io.enq.bits.predTarget
     entries(idx).robIdx     := io.enq.bits.robIdx
-    head  := Mux(head === (IssueEntries - 1).U, 0.U, head + 1.U)
   }
 
   // 出队后清空
-  when(hasReady && !io.flush.valid) {
+  val deqFire = hasReady && io.deqReady && !io.flush.valid
+  when(deqFire) {
     entries(readyIdx).valid := false.B
   }
 
   // count 同步更新：入队 +1, 出队 -1, flush 清零
   val doEnqIssue = io.enq.valid && canEnq && !io.flush.valid
-  val doDeqIssue = hasReady && !io.flush.valid
+  val doDeqIssue = deqFire
   when(io.flush.valid) {
     count := 0.U
   }.otherwise {
@@ -193,5 +195,5 @@ class IssueQueue extends Module {
 
   // 调试
   io.dbgCount := count
-  io.dbgHead  := head
+  io.dbgHead  := enqIdx
 }

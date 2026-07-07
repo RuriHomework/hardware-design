@@ -36,10 +36,16 @@ class DMem extends Module {
     val rdata = Output(UInt(XLen.W))
   })
 
-  val mem = SyncReadMem(DMemDepth, UInt(XLen.W))
-  io.rdata := mem.read(io.addr >> 2)
+  val mem = SyncReadMem(DMemDepth, Vec(4, UInt(8.W)))
+  val rvec = mem.read(io.addr >> 2)
+  io.rdata := Cat(rvec(3), rvec(2), rvec(1), rvec(0))
 
   when(io.wen) {
-    mem.write(io.addr >> 2, io.wdata)
+    val wvec = Wire(Vec(4, UInt(8.W)))
+    wvec(0) := io.wdata(7, 0)
+    wvec(1) := io.wdata(15, 8)
+    wvec(2) := io.wdata(23, 16)
+    wvec(3) := io.wdata(31, 24)
+    mem.write(io.addr >> 2, wvec, io.wmask.asBools)
   }
 }

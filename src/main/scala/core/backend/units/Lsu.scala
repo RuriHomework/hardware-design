@@ -46,14 +46,15 @@ class Lsu extends Module {
 
   // 地址计算
   val addr = io.cmd.bits.a + io.cmd.bits.imm.asUInt
+  val byteOff = addr(1, 0)
 
   // 写数据对齐 + 字节使能（针对当前 cmd）
-  val shamt = io.cmd.bits.a(1, 0) << 3
+  val shamt = byteOff << 3
   val wdataAligned = io.cmd.bits.b << shamt
   val wmask = WireDefault(0.U(4.W))
   switch(io.cmd.bits.uop) {
-    is(SB) { wmask := 1.U << io.cmd.bits.a(1, 0) }
-    is(SH) { wmask := Mux(io.cmd.bits.a(1), "b1100".U, "b0011".U) }
+    is(SB) { wmask := 1.U << byteOff }
+    is(SH) { wmask := Mux(byteOff(1), "b1100".U, "b0011".U) }
     is(SW) { wmask := "b1111".U }
   }
 
@@ -78,7 +79,7 @@ class Lsu extends Module {
         }.elsewhen(UopKind.isLoad(io.cmd.bits.uop)) {
           // load：发地址，下拍收数据
           io.dmem.addr  := addr
-          byteOffReg    := io.cmd.bits.a(1, 0)
+          byteOffReg    := byteOff
           state := sResp
         }
       }
