@@ -51,6 +51,10 @@ class Fetch extends Module {
     // 派发请求（前端 → 后端）
     val dispatch = Output(new DispatchReq)
     val dispatchReady = Input(Bool())  // 后端能否接收
+
+    // 调试
+    val dbgPc = Output(UInt(PcWidth.W))
+    val dbgInstReg = Output(UInt(32.W))
   })
 
   // ===== PC 寄存器 =====
@@ -104,10 +108,15 @@ class Fetch extends Module {
 
   when(!stall) {
     pc := nextPc
-    instReg := io.imem.inst
     pcReg   := pc
     predTakenReg  := bpTaken
     predTargetReg := bpTarget
+    // 重定向时冲刷流水：instReg 塞 NOP，跳过错误路径指令
+    when(redirValid) {
+      instReg := Instr.NOP
+    }.otherwise {
+      instReg := io.imem.inst
+    }
   }
 
   // ===== 静态 JAL/JALR 目标补全 =====
@@ -139,4 +148,8 @@ class Fetch extends Module {
   io.bpQueryIsRet  := isRet
   io.bpQueryTarget := Mux(decoded.uop === JAL,
     (pcReg.asSInt + decoded.imm).asUInt, 0.U)
+
+  // 调试
+  io.dbgPc := pc
+  io.dbgInstReg := instReg
 }

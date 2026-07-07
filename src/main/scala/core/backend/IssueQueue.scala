@@ -47,6 +47,7 @@ class IssueQueue extends Module {
       val a      = UInt(XLen.W)   // 操作数 a（由 PRF 读）
       val b      = UInt(XLen.W)   // 操作数 b
       val imm    = SInt(ImmWidth.W)
+      val usesRs2 = Bool()        // true=R型 b=rs2; false=I型 b=imm
       val predTaken = Bool()
       val predTarget = UInt(PcWidth.W)
       val robIdx = UInt(RobIdWidth.W)
@@ -65,6 +66,10 @@ class IssueQueue extends Module {
 
     // flush（来自 ROB 的重定向）
     val flush = Input(Valid(UInt(RobIdWidth.W)))  // flush robIdx 之后的所有项
+
+    // 调试
+    val dbgCount = Output(UInt((log2Ceil(IssueEntries) + 1).W))
+    val dbgHead  = Output(UInt(log2Ceil(IssueEntries).W))
   })
 
   // 队列项定义
@@ -133,6 +138,7 @@ class IssueQueue extends Module {
     io.deq.bits.a := Mux(e.usesRs1, io.prf.rs1Data, 0.U)
     io.deq.bits.b := Mux(e.usesRs2, io.prf.rs2Data, 0.U)
     io.deq.bits.imm        := e.imm
+    io.deq.bits.usesRs2    := e.usesRs2
     io.deq.bits.predTaken  := e.predTaken
     io.deq.bits.predTarget := e.predTarget
     io.deq.bits.robIdx     := e.robIdx
@@ -143,6 +149,13 @@ class IssueQueue extends Module {
   // 入队
   val canEnq = count < IssueEntries.U
   io.enqReady := canEnq && !io.flush.valid
+
+  // enq 时如果 CDB 同周期广播且匹配，直接置 ready
+  val enqRs1Wakeup = io.enq.bits.usesRs1 && io.cdb.valid &&
+                     io.enq.bits.prs1 === io.cdb.bits.pdst
+  val enqRs2Wakeup = io.enq.bits.usesRs2 && io.cdb.valid &&
+                     io.enq.bits.prs2 === io.cdb.bits.pdst
+
   when(io.enq.valid && canEnq && !io.flush.valid) {
     val idx = head
     entries(idx).valid      := true.B
@@ -152,8 +165,8 @@ class IssueQueue extends Module {
     entries(idx).pdst       := io.enq.bits.pdst
     entries(idx).prs1       := io.enq.bits.prs1
     entries(idx).prs2       := io.enq.bits.prs2
-    entries(idx).rs1Ready   := io.enq.bits.rs1Ready
-    entries(idx).rs2Ready   := io.enq.bits.rs2Ready
+    entries(idx).rs1Ready   := io.enq.bits.rs1Ready || enqRs1Wakeup
+    entries(idx).rs2Ready   := io.enq.bits.rs2Ready || enqRs2Wakeup
     entries(idx).imm        := io.enq.bits.imm
     entries(idx).usesRs1    := io.enq.bits.usesRs1
     entries(idx).usesRs2    := io.enq.bits.usesRs2
@@ -161,12 +174,24 @@ class IssueQueue extends Module {
     entries(idx).predTarget := io.enq.bits.predTarget
     entries(idx).robIdx     := io.enq.bits.robIdx
     head  := Mux(head === (IssueEntries - 1).U, 0.U, head + 1.U)
-    count := count + 1.U
   }
 
   // 出队后清空
   when(hasReady && !io.flush.valid) {
     entries(readyIdx).valid := false.B
-    count := count - 1.U
   }
+
+  // count 同步更新：入队 +1, 出队 -1, flush 清零
+  val doEnqIssue = io.enq.valid && canEnq && !io.flush.valid
+  val doDeqIssue = hasReady && !io.flush.valid
+  when(io.flush.valid) {
+    count := 0.U
+  }.otherwise {
+    val deltaI = Mux(doEnqIssue, 1.S(2.W), 0.S) - Mux(doDeqIssue, 1.S(2.W), 0.S)
+    count := (count.asSInt + deltaI).asUInt
+  }
+
+  // 调试
+  io.dbgCount := count
+  io.dbgHead  := head
 }

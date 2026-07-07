@@ -1,8 +1,9 @@
 # Verilator 仿真 Makefile
 #
 # 用法:
-#   make sim          # 生成 Verilog + 编译 + 运行
-#   make wave         # 同上，并生成 VCD 波形到 build/wave.vcd
+#   make sim          # 生成 Core Verilog + 编译 + 运行
+#   make wave         # 同上，并生成 VCD 波形到 sim/simx.vcd
+#   make sim RTL_TOP=Counter TB_SRC=cpp/tb_counter.cpp
 #   make clean        # 清理仿真中间产物
 #
 # 前置:
@@ -16,12 +17,12 @@ PROJ_ROOT := $(abspath $(CURDIR)/..)
 
 # 生成 Verilog 的输出目录
 RTL_DIR   := $(PROJ_ROOT)/build
-RTL_TOP   := Counter
+RTL_TOP   ?= Core
 RTL_FILE  := $(RTL_DIR)/$(RTL_TOP).sv
 
 # Verilator 工作目录
 OBJ_DIR   := $(CURDIR)/obj_dir
-TB_SRC    := cpp/tb_counter.cpp
+TB_SRC    ?= cpp/tb_core.cpp
 
 # Verilator flags
 VFLAGS := --top-module $(RTL_TOP)
@@ -31,6 +32,7 @@ VFLAGS += --trace-structs
 VFLAGS += -Wall
 # Chisel 生成的 RANDOMIZE 块会留未使用信号，抑制这类告警
 VFLAGS += -Wno-UNUSEDSIGNAL
+VFLAGS += -Wno-DECLFILENAME
 VFLAGS += -CFLAGS -std=c++17
 
 # 默认目标：编译并运行仿真
@@ -50,7 +52,7 @@ wave: rtl $(OBJ_DIR)/V$(RTL_TOP)
 # 生成 SystemVerilog
 rtl:
 	@echo "==> Elaborating Chisel -> SystemVerilog"
-	cd $(PROJ_ROOT) && sbt "runMain Elaborate --target-dir build"
+	cd $(PROJ_ROOT) && sbt "runMain Elaborate --top $(RTL_TOP)"
 
 # Verilator 编译
 $(OBJ_DIR)/V$(RTL_TOP): $(RTL_FILE) $(TB_SRC)

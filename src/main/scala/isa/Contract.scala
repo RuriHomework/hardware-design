@@ -135,10 +135,13 @@ class CdbEntry extends Bundle {
 }
 
 /** 单发射后端→commit 的执行完成包。
- *  valid 由外层 Valid() 包裹提供，本 Bundle 不含 valid 字段。 */
+ *  valid 由外层 Valid() 包裹提供，本 Bundle 不含 valid 字段。
+ *  taken/target 仅对分支/跳转 uop 有意义，其他 uop 填 false.B/0.U。 */
 class WritebackBundle extends Bundle {
   val robIdx   = UInt(RobIdWidth.W)
   val pdst     = UInt(LogNumPhys.W)
   val data     = UInt(XLen.W)
   val cause    = RedirectCause()
+  val taken    = Bool()         // 分支/跳转实际是否跳
+  val target   = UInt(PcWidth.W) // 实际跳转目标
 }

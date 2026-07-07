@@ -8,15 +8,14 @@ import isa.CoreConfig._
 import isa.Uop._
 
 /**
- * LSU：访存单元，单周期地址计算 + 一拍 BRAM 访问。
+ * LSU：访存单元。
  *
- * 流程：
- *   1. cmd 启动：算地址 = rs1 + imm
- *   2. 读：向 DMem 发地址，下一拍 rdata 回来，按 uop 做符号扩展
- *   3. 写：同周期把 wdata + wmask 发给 DMem
+ * 流程（读延迟 1 拍）：
+ *   周期 N (sReq)：算地址 = rs1 + imm，发地址给 DMem，寄存 uop/byteOff
+ *   周期 N+1 (sResp)：DMem rdata 回来，按 uop + byteOff 做符号扩展，done
+ * 写：周期 N 单周期完成，done 即拉高
  *
  * 单槽位，busy 时 Issue 不能派发新指令。
- * 读延迟 1 → done 在启动后第 2 拍拉高。
  */
 class Lsu extends Module {
   val io = IO(new Bundle {
@@ -40,30 +39,28 @@ class Lsu extends Module {
     val busy   = Output(Bool())
   })
 
-  // 状态：1 拍发地址，1 拍等数据
-  val sIdle :: sReadWait :: sDone :: Nil = Enum(3)
-  val state = RegInit(sIdle)
-  val uopReg = RegInit(Uop.NOP)
+  val sIdle :: sResp :: Nil = Enum(2)
+  val state    = RegInit(sIdle)
+  val uopReg   = RegInit(Uop.NOP)
+  val byteOffReg = RegInit(0.U(2.W))
 
+  // 地址计算
   val addr = io.cmd.bits.a + io.cmd.bits.imm.asUInt
 
-  // 字节使能
-  val byteEn = WireDefault(0.U(4.W))
-  val wdataAligned = WireDefault(0.U(XLen.W))
-  switch(io.cmd.bits.uop) {
-    is(SB) { byteEn := 1.U << io.cmd.bits.a(1, 0) }
-    is(SH) {
-      byteEn := Mux(io.cmd.bits.a(1), "b1100".U, "b0011".U)
-    }
-    is(SW) { byteEn := "b1111".U }
-  }
-  // 对齐写数据
+  // 写数据对齐 + 字节使能（针对当前 cmd）
   val shamt = io.cmd.bits.a(1, 0) << 3
-  wdataAligned := io.cmd.bits.b << shamt
+  val wdataAligned = io.cmd.bits.b << shamt
+  val wmask = WireDefault(0.U(4.W))
+  switch(io.cmd.bits.uop) {
+    is(SB) { wmask := 1.U << io.cmd.bits.a(1, 0) }
+    is(SH) { wmask := Mux(io.cmd.bits.a(1), "b1100".U, "b0011".U) }
+    is(SW) { wmask := "b1111".U }
+  }
 
+  // 默认输出
   io.dmem.addr  := 0.U
   io.dmem.wdata := wdataAligned
-  io.dmem.wmask := byteEn
+  io.dmem.wmask := wmask
   io.dmem.wen   := false.B
   io.result := 0.U
   io.done   := false.B
@@ -74,37 +71,34 @@ class Lsu extends Module {
       when(io.cmd.valid) {
         uopReg := io.cmd.bits.uop
         when(UopKind.isStore(io.cmd.bits.uop)) {
-          // store：当周期写
-          io.dmem.addr  := addr
-          io.dmem.wen   := true.B
+          // store：当周期写，单周期完成
+          io.dmem.addr := addr
+          io.dmem.wen  := true.B
           io.done := true.B
-          // 单周期完成，回到 idle
         }.elsewhen(UopKind.isLoad(io.cmd.bits.uop)) {
+          // load：发地址，下拍收数据
           io.dmem.addr  := addr
-          state := sReadWait
+          byteOffReg    := io.cmd.bits.a(1, 0)
+          state := sResp
         }
       }
     }
-    is(sReadWait) {
-      // 本周期 rdata 来自 DMem，做扩展
+    is(sResp) {
+      // DMem rdata 已到，按 byteOff 做扩展
       val rdata = io.dmem.rdata
-      val off = RegNext(io.cmd.bits.a(1, 0))  // 注：cmd 在 idle 时有效，这里读 reg
-      val byteOff = addr(1, 0)
-      val extRes = WireDefault(0.U(XLen.W))
+      val off = byteOffReg
+      val byteSel = off(1, 0)
+      val byteVal = (rdata >> (byteSel << 3))(7, 0)
+      val halfSel = off(1)
+      val halfVal = (rdata >> (halfSel << 4))(15, 0)
+
       switch(uopReg) {
-        is(LB) {
-          val b = rdata(7, 0)
-          extRes := Cat(Fill(24, b(7)), b)
-        }
-        is(LBU) { extRes := rdata(7, 0) }
-        is(LH) {
-          val h = rdata(15, 0)
-          extRes := Cat(Fill(16, h(15)), h)
-        }
-        is(LHU) { extRes := rdata(15, 0) }
-        is(LW)  { extRes := rdata }
+        is(LB)  { io.result := Cat(Fill(24, byteVal(7)),  byteVal) }
+        is(LBU) { io.result := byteVal }
+        is(LH)  { io.result := Cat(Fill(16, halfVal(15)), halfVal) }
+        is(LHU) { io.result := halfVal }
+        is(LW)  { io.result := rdata }
       }
-      io.result := extRes
       io.done := true.B
       state := sIdle
     }

@@ -40,6 +40,18 @@ class Backend extends Module {
       val wen   = Output(Bool())
       val rdata = Input(UInt(XLen.W))
     }
+
+    // 调试：commit 时的逻辑寄存器号 + 数据（从 PRF 读 pdst）
+    val dbgCommitRd   = Output(UInt(LogNumLogical.W))
+    val dbgCommitData = Output(UInt(XLen.W))
+    val dbgCommitWritesReg = Output(Bool())
+    // 内部状态（调试）
+    val dbgRobCount = Output(UInt((log2Ceil(RobEntries) + 1).W))
+    val dbgIssueCount = Output(UInt((log2Ceil(IssueEntries) + 1).W))
+    val dbgEnqValid = Output(Bool())
+    val dbgFreeAvail = Output(Bool())
+    val dbgCdbValid = Output(Bool())
+    val dbgCdbPdst = Output(UInt(LogNumPhys.W))
   })
 
   // ===== 实例化部件 =====
@@ -62,13 +74,17 @@ class Backend extends Module {
   // rename 查询
   rmt.io.rs1 := instr.rs1
   rmt.io.rs2 := instr.rs2
-  rmt.io.usesRs1 := instr.usesRs1
-  rmt.io.usesRs2 := instr.usesRs2
   rmt.io.rd := instr.rd
   rmt.io.writesReg := instr.writesReg
   rmt.io.newPdst := free.io.allocPdst
   rmt.io.update := dispatchValid && instr.writesReg && free.io.allocAvail && rob.io.enqReady
   rmt.io.rollback := rob.io.rollback
+
+  // ready 查询：用 PhysRegReady（以 pdst 为键）
+  ready.io.query1 := rmt.io.rs1Pdst
+  ready.io.query2 := rmt.io.rs2Pdst
+  val rs1ReadyVal = Mux(instr.usesRs1, ready.io.ready1, true.B)
+  val rs2ReadyVal = Mux(instr.usesRs2, ready.io.ready2, true.B)
 
   // FreeList 分配
   free.io.allocReq := dispatchValid && instr.writesReg && rob.io.enqReady
@@ -94,8 +110,8 @@ class Backend extends Module {
   issue.io.enq.bits.pdst       := free.io.allocPdst
   issue.io.enq.bits.prs1       := rmt.io.rs1Pdst
   issue.io.enq.bits.prs2       := rmt.io.rs2Pdst
-  issue.io.enq.bits.rs1Ready   := rmt.io.rs1Ready
-  issue.io.enq.bits.rs2Ready   := rmt.io.rs2Ready
+  issue.io.enq.bits.rs1Ready   := rs1ReadyVal
+  issue.io.enq.bits.rs2Ready   := rs2ReadyVal
   issue.io.enq.bits.imm        := instr.imm
   issue.io.enq.bits.usesRs1    := instr.usesRs1
   issue.io.enq.bits.usesRs2    := instr.usesRs2
@@ -153,8 +169,7 @@ class Backend extends Module {
   prf.io.waddr := cdb.bits.pdst
   prf.io.wdata := cdb.bits.data
 
-  // ready array：写回时置位（暂未完整使用）
-  ready.io.query := 0.U
+  // ready array：写回时置位；dispatch 分配新 pdst 时清 ready
   ready.io.setReady.valid := cdb.valid
   ready.io.setReady.bits  := cdb.bits.pdst
   ready.io.clearReady.valid := issue.io.enq.valid
@@ -170,21 +185,9 @@ class Backend extends Module {
 
   alu.io.uop := deq.bits.uop
   alu.io.a   := deq.bits.a
-  alu.io.b   := Mux(deq.bits.uop === LUI, deq.bits.imm.asUInt,
-              Mux(deq.bits.uop === AUIPC, deq.bits.imm.asUInt,
-              Mux(deq.bits.uop === ADD || deq.bits.uop === SLT || deq.bits.uop === SLTU ||
-                  deq.bits.uop === XOR || deq.bits.uop === OR  || deq.bits.uop === AND ||
-                  deq.bits.uop === SLL || deq.bits.uop === SRL || deq.bits.uop === SRA,
-                  deq.bits.imm.asUInt, deq.bits.b)))
-  // 注意：R 型指令 b = rs2；I 型指令 b = imm。Decoder 已标 usesRs2，
-  // IssueQueue 读 PRF 时 usesRs2=false 则 b=0，这里需要补 imm
-  // 简化：对 I 型算术，b 取 imm
-  val isITypeArith = deq.bits.uop === ADD || deq.bits.uop === SLT || deq.bits.uop === SLTU ||
-                     deq.bits.uop === XOR || deq.bits.uop === OR  || deq.bits.uop === AND ||
-                     deq.bits.uop === SLL || deq.bits.uop === SRL || deq.bits.uop === SRA
-  when(isITypeArith && !deq.bits.uop.isOneOf(SLL, SRL, SRA)) {
-    alu.io.b := deq.bits.imm.asUInt
-  }
+  // b 选择：LUI/AUIPC → imm；I型算术(usesRs2=false) → imm；R型 → rs2 数据
+  alu.io.b   := Mux(deq.bits.uop === LUI || deq.bits.uop === AUIPC || !deq.bits.usesRs2,
+                    deq.bits.imm.asUInt, deq.bits.b)
 
   bru.io.uop       := deq.bits.uop
   bru.io.a         := deq.bits.a
@@ -239,13 +242,11 @@ class Backend extends Module {
   rob.io.wb.bits.robIdx := cdb.bits.robIdx
   rob.io.wb.bits.pdst   := cdb.bits.pdst
   rob.io.wb.bits.data   := cdb.bits.data
-  // 分支误预测信息
-  rob.io.wb.bits.cause := Mux(bru.io.mispred && bruDone,
+  // 分支误预测 + 实际 taken/target（来自 BRU）
+  rob.io.wb.bits.cause  := Mux(bru.io.mispred && bruDone,
     RedirectCause.MISPRED, RedirectCause.NONE)
-  // 把分支实际结果写进 ROB entry（用于 commit 时 retire BP）
-  // 简化：在 wb 时同时更新 taken/target
-  // 这需要在 ROB entry 里记录 taken/target，上面 Rob.io.wb 没带这些字段
-  // → 留作下一步：扩展 WritebackBundle 带 taken/target
+  rob.io.wb.bits.taken  := bru.io.taken  && bruDone
+  rob.io.wb.bits.target := bru.io.target
 
   // ===== IssueQueue flush =====
   issue.io.flush.valid := rob.io.flushIssue
@@ -267,4 +268,16 @@ class Backend extends Module {
   // ROB 有空 + (不写寄存器 或 FreeList 有空) + IssueQueue 有空
   io.dispatchReady := rob.io.enqReady && issue.io.enqReady &&
     (!instr.writesReg || free.io.allocAvail)
+
+  // ===== 调试：commit 时的 rd + data =====
+  prf.io.dbgRaddr := rob.io.commit.bits.pdst
+  io.dbgCommitRd   := rob.io.commit.bits.rd
+  io.dbgCommitData := prf.io.dbgRdata
+  io.dbgCommitWritesReg := rob.io.commit.bits.writesReg
+  io.dbgRobCount := rob.io.dbgCount
+  io.dbgIssueCount := issue.io.dbgCount
+  io.dbgEnqValid := rob.io.enq.valid
+  io.dbgFreeAvail := free.io.allocAvail
+  io.dbgCdbValid := cdb.valid
+  io.dbgCdbPdst := cdb.bits.pdst
 }

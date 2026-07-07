@@ -34,6 +34,20 @@ class Core extends Module {
     // 调试观察口
     val dbgCommit = Output(new RetireInfo)
     val dbgCommitValid = Output(Bool())
+    val dbgCommitRd   = Output(UInt(LogNumLogical.W))
+    val dbgCommitData = Output(UInt(XLen.W))
+    val dbgCommitWritesReg = Output(Bool())
+    // 内部状态（调试）
+    val dbgRobCount = Output(UInt((log2Ceil(RobEntries) + 1).W))
+    val dbgIssueCount = Output(UInt((log2Ceil(IssueEntries) + 1).W))
+    val dbgDispatchReady = Output(Bool())
+    val dbgPc = Output(UInt(PcWidth.W))
+    val dbgInstReg = Output(UInt(32.W))
+    val dbgDispatchValid = Output(Bool())
+    val dbgEnqValid = Output(Bool())
+    val dbgFreeAvail = Output(Bool())
+    val dbgCdbValid = Output(Bool())
+    val dbgCdbPdst = Output(UInt(LogNumPhys.W))
   })
 
   val bp    = Module(new BranchPredictor)
@@ -73,4 +87,17 @@ class Core extends Module {
 
   io.dbgCommit       := be.io.retire.bits
   io.dbgCommitValid  := be.io.retire.valid
+  io.dbgCommitRd     := be.io.dbgCommitRd
+  io.dbgCommitData   := be.io.dbgCommitData
+  io.dbgCommitWritesReg := be.io.dbgCommitWritesReg
+  io.dbgRobCount := be.io.dbgRobCount
+  io.dbgIssueCount := be.io.dbgIssueCount
+  io.dbgDispatchReady := be.io.dispatchReady
+  io.dbgPc := fetch.io.dbgPc
+  io.dbgInstReg := fetch.io.dbgInstReg
+  io.dbgDispatchValid := fetch.io.dispatch.valid
+  io.dbgEnqValid := be.io.dbgEnqValid
+  io.dbgFreeAvail := be.io.dbgFreeAvail
+  io.dbgCdbValid := be.io.dbgCdbValid
+  io.dbgCdbPdst := be.io.dbgCdbPdst
 }

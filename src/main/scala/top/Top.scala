@@ -21,6 +21,9 @@ class Top extends Module {
   val io = IO(new Bundle {
     val dbgCommit = Output(new RetireInfo)
     val dbgCommitValid = Output(Bool())
+    val dbgCommitRd   = Output(UInt(LogNumLogical.W))
+    val dbgCommitData = Output(UInt(XLen.W))
+    val dbgCommitWritesReg = Output(Bool())
   })
 
   val core = Module(new Core)
@@ -41,6 +44,9 @@ class Top extends Module {
   // 调试
   io.dbgCommit       := core.io.dbgCommit
   io.dbgCommitValid  := core.io.dbgCommitValid
+  io.dbgCommitRd     := core.io.dbgCommitRd
+  io.dbgCommitData   := core.io.dbgCommitData
+  io.dbgCommitWritesReg := core.io.dbgCommitWritesReg
 }
 
 object TopMain extends App {

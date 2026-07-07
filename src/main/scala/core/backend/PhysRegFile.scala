@@ -27,6 +27,10 @@ class PhysRegFile extends Module {
     val wen   = Input(Bool())
     val waddr = Input(UInt(LogNumPhys.W))
     val wdata = Input(UInt(XLen.W))
+
+    // 调试读口（不参与综合，ILA/测试用）
+    val dbgRaddr = Input(UInt(LogNumPhys.W))
+    val dbgRdata = Output(UInt(XLen.W))
   })
 
   val regs = RegInit(VecInit(Seq.fill(NumPhysRegs)(0.U(XLen.W))))
@@ -35,6 +39,7 @@ class PhysRegFile extends Module {
   // bypass 由 IssueQueue 监听 CDB 实现，PRF 不做 write-first。
   io.rs1Data := regs(io.rs1)
   io.rs2Data := regs(io.rs2)
+  io.dbgRdata := regs(io.dbgRaddr)
 
   when(io.wen) { regs(io.waddr) := io.wdata }
 }
@@ -45,8 +50,10 @@ class PhysRegFile extends Module {
  */
 class PhysRegReady extends Module {
   val io = IO(new Bundle {
-    val query  = Input(UInt(LogNumPhys.W))
-    val ready  = Output(Bool())
+    val query1 = Input(UInt(LogNumPhys.W))
+    val ready1 = Output(Bool())
+    val query2 = Input(UInt(LogNumPhys.W))
+    val ready2 = Output(Bool())
 
     // 写回时置 ready
     val setReady = Input(Valid(UInt(LogNumPhys.W)))
@@ -56,10 +63,9 @@ class PhysRegReady extends Module {
 
   val ready = RegInit(VecInit(Seq.fill(NumPhysRegs)(true.B)))
 
-  // 默认查询
-  io.ready := ready(io.query)
+  io.ready1 := ready(io.query1) || io.query1 === 0.U
+  io.ready2 := ready(io.query2) || io.query2 === 0.U
 
-  // 写回置位
   when(io.setReady.valid)  { ready(io.setReady.bits)  := true.B  }
   when(io.clearReady.valid){ ready(io.clearReady.bits):= false.B }
 }

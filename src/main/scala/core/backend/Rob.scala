@@ -71,6 +71,11 @@ class Rob extends Module {
 
     // flush IssueQueue
     val flushIssue = Output(Bool())
+
+    // 调试
+    val dbgCount = Output(UInt((log2Ceil(RobEntries) + 1).W))
+    val dbgHead  = Output(UInt(RobIdWidth.W))
+    val dbgTail  = Output(UInt(RobIdWidth.W))
   })
 
   class RobEntry extends Bundle {
@@ -115,13 +120,14 @@ class Rob extends Module {
     entries(tail).predTaken  := io.enq.bits.predTaken
     entries(tail).predTarget := io.enq.bits.predTarget
     tail  := tail + 1.U
-    count := count + 1.U
   }
 
   // 写回：根据 robIdx 定位
   when(io.wb.valid) {
     entries(io.wb.bits.robIdx).done := true.B
-    entries(io.wb.bits.robIdx).exception := io.wb.bits.cause =/= RedirectCause.NONE
+    entries(io.wb.bits.robIdx).taken := io.wb.bits.taken
+    entries(io.wb.bits.robIdx).target := io.wb.bits.target
+    entries(io.wb.bits.robIdx).exception := io.wb.bits.cause === RedirectCause.EXCEPTION
     when(io.wb.bits.cause === RedirectCause.MISPRED) {
       entries(io.wb.bits.robIdx).mispred := true.B
     }
@@ -174,6 +180,15 @@ class Rob extends Module {
   when(canCommit) {
     entries(head).valid := false.B
     head  := head + 1.U
-    count := count - 1.U
   }
+
+  // count 同步更新：入队 +1, commit -1, 二者可同周期发生
+  val doEnq = io.enq.valid && canEnq
+  val delta = Mux(doEnq, 1.S(2.W), 0.S) - Mux(canCommit, 1.S(2.W), 0.S)
+  count := (count.asSInt + delta).asUInt
+
+  // 调试
+  io.dbgCount := count
+  io.dbgHead  := head
+  io.dbgTail  := tail
 }
