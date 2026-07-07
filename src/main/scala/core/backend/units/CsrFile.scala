@@ -19,6 +19,14 @@ class CsrFile extends Module {
     val redirect = Output(Bool())
     val target   = Output(UInt(PcWidth.W))
     val cause    = Output(RedirectCause())
+
+    val timerInterrupt = Input(Bool())
+    val interrupt = new Bundle {
+      val fire = Input(Bool())
+      val pc = Input(UInt(PcWidth.W))
+      val pending = Output(Bool())
+      val target = Output(UInt(PcWidth.W))
+    }
   })
 
   val mstatus  = RegInit(0.U(XLen.W))
@@ -27,10 +35,11 @@ class CsrFile extends Module {
   val mscratch = RegInit(0.U(XLen.W))
   val mepc     = RegInit(0.U(XLen.W))
   val mcause   = RegInit(0.U(XLen.W))
-  val mip      = RegInit(0.U(XLen.W))
+  val mipReg   = RegInit(0.U(XLen.W))
   val mcycle   = RegInit(0.U(XLen.W))
 
   mcycle := mcycle + 1.U
+  val mip = Mux(io.timerInterrupt, mipReg | (1.U << 7), mipReg & ~(1.U << 7).asUInt)
 
   val old = WireDefault(0.U(XLen.W))
   switch(io.cmd.bits.addr) {
@@ -64,17 +73,29 @@ class CsrFile extends Module {
       is("h340".U) { mscratch := writeValue }
       is("h341".U) { mepc := writeValue & "hFFFFFFFC".U }
       is("h342".U) { mcause := writeValue }
-      is("h344".U) { mip := writeValue }
+      is("h344".U) { mipReg := writeValue }
       is("hB00".U) { mcycle := writeValue }
     }
   }
 
   val trap = io.cmd.valid && (io.cmd.bits.uop === ECALL || io.cmd.bits.uop === EBREAK)
   val ret = io.cmd.valid && io.cmd.bits.uop === MRET
+  val timerPending = mstatus(3) && mie(7) && mip(7)
+
+  def enterTrap(pc: UInt, cause: UInt): Unit = {
+    mepc := pc
+    mcause := cause
+    mstatus := (mstatus & ~(1.U << 3).asUInt & ~(1.U << 7).asUInt) |
+      (mstatus(3).asUInt << 7)
+  }
 
   when(trap) {
-    mepc := io.cmd.bits.pc
-    mcause := Mux(io.cmd.bits.uop === ECALL, 11.U, 3.U)
+    enterTrap(io.cmd.bits.pc, Mux(io.cmd.bits.uop === ECALL, 11.U, 3.U))
+  }.elsewhen(io.interrupt.fire) {
+    enterTrap(io.interrupt.pc, "h80000007".U)
+  }.elsewhen(ret) {
+    mstatus := (mstatus | (1.U << 7).asUInt) |
+      (mstatus(7).asUInt << 3)
   }
 
   io.result := old
@@ -82,6 +103,8 @@ class CsrFile extends Module {
   io.target := Mux(ret, mepc, mtvec & "hFFFFFFFC".U)
   io.cause := Mux(trap, RedirectCause.EXCEPTION,
     Mux(ret, RedirectCause.FLUSH, RedirectCause.NONE))
+  io.interrupt.pending := timerPending
+  io.interrupt.target := mtvec & "hFFFFFFFC".U
 }
 
 object CsrFile {

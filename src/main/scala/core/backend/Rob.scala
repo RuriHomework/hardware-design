@@ -71,6 +71,7 @@ class Rob extends Module {
 
     // flush IssueQueue
     val flushIssue = Output(Bool())
+    val flushAll = Input(Bool())
 
     // 调试
     val dbgCount = Output(UInt((log2Ceil(RobEntries) + 1).W))
@@ -104,7 +105,14 @@ class Rob extends Module {
   val canEnq = count < RobEntries.U
   io.enqReady := canEnq
   io.enqIdx   := tail
-  when(io.enq.valid && canEnq) {
+  when(io.flushAll) {
+    for (e <- entries) {
+      e.valid := false.B
+      e.done := false.B
+    }
+    head := tail
+    count := 0.U
+  }.elsewhen(io.enq.valid && canEnq) {
     entries(tail).valid      := true.B
     entries(tail).uop        := io.enq.bits.uop
     entries(tail).pc         := io.enq.bits.pc
@@ -123,7 +131,7 @@ class Rob extends Module {
   }
 
   // 写回：根据 robIdx 定位
-  when(io.wb.valid) {
+  when(io.wb.valid && !io.flushAll) {
     entries(io.wb.bits.robIdx).done := true.B
     entries(io.wb.bits.robIdx).taken := io.wb.bits.taken
     entries(io.wb.bits.robIdx).target := io.wb.bits.target
@@ -177,7 +185,7 @@ class Rob extends Module {
   io.flushIssue := io.redirect.valid
 
   // 推进 head
-  when(canCommit) {
+  when(canCommit && !io.flushAll) {
     entries(head).valid := false.B
     head  := head + 1.U
   }
@@ -185,7 +193,9 @@ class Rob extends Module {
   // count 同步更新：入队 +1, commit -1, 二者可同周期发生
   val doEnq = io.enq.valid && canEnq
   val delta = Mux(doEnq, 1.S(2.W), 0.S) - Mux(canCommit, 1.S(2.W), 0.S)
-  count := (count.asSInt + delta).asUInt
+  when(!io.flushAll) {
+    count := (count.asSInt + delta).asUInt
+  }
 
   // 调试
   io.dbgCount := count

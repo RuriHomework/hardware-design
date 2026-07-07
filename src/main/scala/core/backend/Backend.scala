@@ -40,6 +40,7 @@ class Backend extends Module {
       val wen   = Output(Bool())
       val rdata = Input(UInt(XLen.W))
     }
+    val timerInterrupt = Input(Bool())
 
     // 调试：commit 时的逻辑寄存器号 + 数据（从 PRF 读 pdst）
     val dbgCommitRd   = Output(UInt(LogNumLogical.W))
@@ -52,6 +53,8 @@ class Backend extends Module {
     val dbgFreeAvail = Output(Bool())
     val dbgCdbValid = Output(Bool())
     val dbgCdbPdst = Output(UInt(LogNumPhys.W))
+    val dbgTimerPending = Output(Bool())
+    val dbgInterruptFire = Output(Bool())
   })
 
   // ===== 实例化部件 =====
@@ -67,11 +70,14 @@ class Backend extends Module {
   val lsu = Module(new Lsu)
   val mdu = Module(new MulDiv)
   val csr = Module(new CsrFile)
+  csr.io.timerInterrupt := io.timerInterrupt
 
   // ===== Dispatch: rename + 分配 =====
   val dispatchValid = io.dispatch.valid
   val instr = io.dispatch.instr
   val instrWritesReg = instr.writesReg && instr.rd =/= 0.U
+  val interruptFire = csr.io.interrupt.pending
+  val dispatchAccept = dispatchValid && !interruptFire
 
   // rename 查询
   rmt.io.rs1 := instr.rs1
@@ -79,7 +85,7 @@ class Backend extends Module {
   rmt.io.rd := instr.rd
   rmt.io.writesReg := instrWritesReg
   rmt.io.newPdst := free.io.allocPdst
-  rmt.io.update := dispatchValid && instrWritesReg && free.io.allocAvail && rob.io.enqReady
+  rmt.io.update := dispatchAccept && instrWritesReg && free.io.allocAvail && rob.io.enqReady
   rmt.io.rollback := rob.io.rollback
 
   // ready 查询：用 PhysRegReady（以 pdst 为键）
@@ -89,12 +95,12 @@ class Backend extends Module {
   val rs2ReadyVal = Mux(instr.usesRs2, ready.io.ready2, true.B)
 
   // FreeList 分配
-  free.io.allocReq := dispatchValid && instrWritesReg && rob.io.enqReady
+  free.io.allocReq := dispatchAccept && instrWritesReg && rob.io.enqReady
   free.io.freeReq  := rob.io.freeReq
   free.io.freePdst := rob.io.freePdst
 
   // ROB 入队
-  rob.io.enq.valid := dispatchValid && (!instrWritesReg || free.io.allocAvail) && rob.io.enqReady
+  rob.io.enq.valid := dispatchAccept && (!instrWritesReg || free.io.allocAvail) && rob.io.enqReady
   rob.io.enq.bits.uop        := instr.uop
   rob.io.enq.bits.pc         := instr.pc
   rob.io.enq.bits.rd         := instr.rd
@@ -250,6 +256,8 @@ class Backend extends Module {
   csr.io.cmd.bits.pc := deq.bits.pc
   csr.io.cmd.bits.addr := deq.bits.imm.asUInt(11, 0)
   csr.io.cmd.bits.src := Mux(CsrFile.isImm(deq.bits.uop), deq.bits.zimm, deq.bits.a)
+  csr.io.interrupt.fire := interruptFire
+  csr.io.interrupt.pc := instr.pc
 
   // 派发逻辑：根据 uop 路由到对应单元
   when(deq.valid && canIssue) {
@@ -293,11 +301,18 @@ class Backend extends Module {
   rob.io.wb.bits.target := Mux(csr.io.redirect, csr.io.target, bru.io.target)
 
   // ===== IssueQueue flush =====
-  issue.io.flush.valid := rob.io.flushIssue
+  issue.io.flush.valid := rob.io.flushIssue || interruptFire
   issue.io.flush.bits  := rob.io.redirect.bits.robIdx
+  rob.io.flushAll := interruptFire
 
   // ===== 对外接口 =====
-  io.redirect := rob.io.redirect
+  io.redirect.valid := rob.io.redirect.valid || interruptFire
+  io.redirect.bits := rob.io.redirect.bits
+  when(interruptFire) {
+    io.redirect.bits.target := csr.io.interrupt.target
+    io.redirect.bits.robIdx := 0.U
+    io.redirect.bits.cause := RedirectCause.EXCEPTION
+  }
 
   io.retire.valid := rob.io.commit.valid
   io.retire.bits.pc      := rob.io.commit.bits.pc
@@ -310,7 +325,7 @@ class Backend extends Module {
 
   // ===== dispatchReady =====
   // ROB 有空 + (不写寄存器 或 FreeList 有空) + IssueQueue 有空
-  io.dispatchReady := rob.io.enqReady && issue.io.enqReady &&
+  io.dispatchReady := !interruptFire && rob.io.enqReady && issue.io.enqReady &&
     (!instrWritesReg || free.io.allocAvail)
 
   // ===== 调试：commit 时的 rd + data =====
@@ -324,4 +339,6 @@ class Backend extends Module {
   io.dbgFreeAvail := free.io.allocAvail
   io.dbgCdbValid := cdb.valid
   io.dbgCdbPdst := cdb.bits.pdst
+  io.dbgTimerPending := csr.io.interrupt.pending
+  io.dbgInterruptFire := interruptFire
 }

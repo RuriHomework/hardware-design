@@ -29,6 +29,7 @@ class Top extends Module {
   val core = Module(new Core)
   val imem = Module(new IMem)
   val dmem = Module(new DMem)
+  core.io.timerInterrupt := false.B
 
   // IMem 连线
   imem.io.addr := core.io.imem.addr

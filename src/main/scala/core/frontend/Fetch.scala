@@ -106,17 +106,18 @@ class Fetch extends Module {
   // 流水推进：后端没准备好且本拍有有效指令要派发时 stall
   val stall = dispatchValid && !io.dispatchReady
 
-  when(!stall) {
+  when(redirValid) {
+    pc := redirTarget
+    pcReg := pc
+    predTakenReg := false.B
+    predTargetReg := 0.U
+    instReg := Instr.NOP
+  }.elsewhen(!stall) {
     pc := nextPc
     pcReg   := pc
     predTakenReg  := bpTaken
     predTargetReg := bpTarget
-    // 重定向时冲刷流水：instReg 塞 NOP，跳过错误路径指令
-    when(redirValid) {
-      instReg := Instr.NOP
-    }.otherwise {
-      instReg := io.imem.inst
-    }
+    instReg := io.imem.inst
   }
 
   // ===== 静态 JAL/JALR 目标补全 =====

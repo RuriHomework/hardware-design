@@ -132,6 +132,7 @@ class BackendStructuresSpec extends AnyFlatSpec with ChiselScalatestTester {
       r.io.enq.bits.predTaken.poke(false.B)
       r.io.enq.bits.predTarget.poke(0.U)
       r.io.wb.valid.poke(false.B)
+      r.io.flushAll.poke(false.B)
       r.clock.step()
 
       r.io.enq.valid.poke(false.B)

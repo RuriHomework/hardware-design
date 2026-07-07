@@ -18,6 +18,10 @@ static constexpr uint32_t NOP    = 0x00000013;
 static constexpr uint32_t IMEM_BASE = 0x00000000;
 static constexpr uint32_t DMEM_BASE = 0x10000000;
 static constexpr uint32_t MMIO_EXIT = 0x20000000;
+static constexpr uint32_t MMIO_MTIME_LO = 0x20000008;
+static constexpr uint32_t MMIO_MTIME_HI = 0x2000000c;
+static constexpr uint32_t MMIO_MTIMECMP_LO = 0x20000010;
+static constexpr uint32_t MMIO_MTIMECMP_HI = 0x20000014;
 static constexpr size_t IMEM_SIZE = 16 * 1024;
 static constexpr size_t DMEM_SIZE = 16 * 1024;
 
@@ -116,6 +120,17 @@ static uint64_t plusArgU64(const char *prefix, int argc, char **argv, uint64_t f
     return std::strtoull(value.c_str(), nullptr, 0);
 }
 
+static uint32_t maskedWordWrite(uint32_t oldValue, uint32_t data, uint8_t mask) {
+    uint32_t next = oldValue;
+    for (int i = 0; i < 4; ++i) {
+        if (mask & (1u << i)) {
+            const uint32_t byteMask = 0xffu << (8 * i);
+            next = (next & ~byteMask) | (data & byteMask);
+        }
+    }
+    return next;
+}
+
 static void eval_dump(VCore *dut, VerilatedVcdC *tfp, vluint64_t &time) {
     dut->eval();
     if (tfp) tfp->dump(time);
@@ -167,10 +182,13 @@ int main(int argc, char **argv) {
 
     vluint64_t time = 0;
     uint32_t pendingDmemRead = DMEM_BASE;
+    uint64_t mtime = 0;
+    uint64_t mtimecmp = UINT64_MAX;
 
     dut->reset = 1;
     dut->io_imem_inst = NOP;
     dut->io_dmem_rdata = 0;
+    dut->io_timerInterrupt = 0;
     tick(dut.get(), tfp, time);
     dut->reset = 0;
 
@@ -179,8 +197,21 @@ int main(int argc, char **argv) {
     uint32_t exitCode = 0xffffffffu;
 
     for (uint64_t cycle = 0; cycle < maxCycles && !halted; ++cycle) {
+        const auto loadMmio32 = [&](uint32_t addr) -> uint32_t {
+            switch (addr) {
+                case MMIO_MTIME_LO: return static_cast<uint32_t>(mtime);
+                case MMIO_MTIME_HI: return static_cast<uint32_t>(mtime >> 32);
+                case MMIO_MTIMECMP_LO: return static_cast<uint32_t>(mtimecmp);
+                case MMIO_MTIMECMP_HI: return static_cast<uint32_t>(mtimecmp >> 32);
+                default: return 0;
+            }
+        };
+
         dut->io_imem_inst = imem.load32(dut->io_imem_addr);
-        dut->io_dmem_rdata = dmem.load32(pendingDmemRead);
+        dut->io_dmem_rdata = dmem.contains(pendingDmemRead)
+            ? dmem.load32(pendingDmemRead)
+            : loadMmio32(pendingDmemRead);
+        dut->io_timerInterrupt = mtime >= mtimecmp;
         dut->eval();
 
         const uint32_t daddr = dut->io_dmem_addr;
@@ -194,6 +225,21 @@ int main(int argc, char **argv) {
                 halted = true;
                 std::printf("mmio_exit: code=%u cycle=%llu\n",
                     exitCode, static_cast<unsigned long long>(cycle));
+            } else if (daddr == MMIO_MTIME_LO || daddr == MMIO_MTIME_HI ||
+                       daddr == MMIO_MTIMECMP_LO || daddr == MMIO_MTIMECMP_HI) {
+                uint32_t lo = static_cast<uint32_t>(daddr < MMIO_MTIMECMP_LO ? mtime : mtimecmp);
+                uint32_t hi = static_cast<uint32_t>((daddr < MMIO_MTIMECMP_LO ? mtime : mtimecmp) >> 32);
+                if (daddr == MMIO_MTIME_LO || daddr == MMIO_MTIMECMP_LO) {
+                    lo = maskedWordWrite(lo, dut->io_dmem_wdata, dut->io_dmem_wmask);
+                } else {
+                    hi = maskedWordWrite(hi, dut->io_dmem_wdata, dut->io_dmem_wmask);
+                }
+                const uint64_t next = (static_cast<uint64_t>(hi) << 32) | lo;
+                if (daddr < MMIO_MTIMECMP_LO) {
+                    mtime = next;
+                } else {
+                    mtimecmp = next;
+                }
             } else if (dmem.contains(daddr)) {
                 dmem.storeMasked32(daddr, dut->io_dmem_wdata, dut->io_dmem_wmask);
             } else {
@@ -203,6 +249,8 @@ int main(int argc, char **argv) {
                 halted = true;
             }
         } else if (dmem.contains(daddr)) {
+            pendingDmemRead = daddr;
+        } else {
             pendingDmemRead = daddr;
         }
 
@@ -229,6 +277,7 @@ int main(int argc, char **argv) {
         }
 
         tick(dut.get(), tfp, time);
+        mtime++;
     }
 
     if (tfp) tfp->close();

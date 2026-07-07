@@ -13,6 +13,9 @@ class CsrFileSpec extends AnyFlatSpec with ChiselScalatestTester {
 
   it should "read and write machine CSRs" in {
     test(new CsrFile) { c =>
+      c.io.timerInterrupt.poke(false.B)
+      c.io.interrupt.fire.poke(false.B)
+      c.io.interrupt.pc.poke(0.U)
       c.io.cmd.valid.poke(true.B)
       c.io.cmd.bits.uop.poke(CSRRW)
       c.io.cmd.bits.pc.poke(0.U)
@@ -42,6 +45,9 @@ class CsrFileSpec extends AnyFlatSpec with ChiselScalatestTester {
 
   it should "redirect ECALL to mtvec and MRET to mepc" in {
     test(new CsrFile) { c =>
+      c.io.timerInterrupt.poke(false.B)
+      c.io.interrupt.fire.poke(false.B)
+      c.io.interrupt.pc.poke(0.U)
       c.io.cmd.valid.poke(true.B)
       c.io.cmd.bits.uop.poke(CSRRW)
       c.io.cmd.bits.pc.poke(0.U)
@@ -62,6 +68,45 @@ class CsrFileSpec extends AnyFlatSpec with ChiselScalatestTester {
       c.io.redirect.expect(true.B)
       c.io.target.expect(0x40.U)
       c.io.cause.expect(RedirectCause.FLUSH)
+    }
+  }
+
+  it should "raise and take machine timer interrupts" in {
+    test(new CsrFile) { c =>
+      c.io.cmd.valid.poke(true.B)
+      c.io.interrupt.fire.poke(false.B)
+      c.io.interrupt.pc.poke(0x44.U)
+      c.io.timerInterrupt.poke(false.B)
+
+      c.io.cmd.bits.uop.poke(CSRRW)
+      c.io.cmd.bits.pc.poke(0.U)
+      c.io.cmd.bits.addr.poke("h305".U) // mtvec
+      c.io.cmd.bits.src.poke(0x100.U)
+      c.clock.step()
+
+      c.io.cmd.bits.addr.poke("h304".U) // mie.MTIE
+      c.io.cmd.bits.src.poke(0x80.U)
+      c.clock.step()
+
+      c.io.cmd.bits.addr.poke("h300".U) // mstatus.MIE
+      c.io.cmd.bits.src.poke(0x8.U)
+      c.clock.step()
+
+      c.io.cmd.valid.poke(false.B)
+      c.io.timerInterrupt.poke(true.B)
+      c.io.interrupt.pending.expect(true.B)
+      c.io.interrupt.target.expect(0x100.U)
+
+      c.io.interrupt.fire.poke(true.B)
+      c.clock.step()
+      c.io.interrupt.fire.poke(false.B)
+      c.io.interrupt.pending.expect(false.B)
+
+      c.io.cmd.valid.poke(true.B)
+      c.io.cmd.bits.uop.poke(CSRRS)
+      c.io.cmd.bits.addr.poke("h342".U) // mcause
+      c.io.cmd.bits.src.poke(0.U)
+      c.io.result.expect("h80000007".U)
     }
   }
 }

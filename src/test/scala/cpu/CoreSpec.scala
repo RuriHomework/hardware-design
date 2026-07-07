@@ -44,6 +44,15 @@ class CoreSpec extends AnyFlatSpec with ChiselScalatestTester {
   def lui(rd: Int, imm: Int): BigInt = {
     ((imm & 0xFFFFF) << 12) | (rd << 7) | OP_LUI
   }
+  def jal(rd: Int, imm: Int): BigInt = {
+    val i = imm & 0x1FFFFF
+    val bit20 = (i >> 20) & 0x1
+    val bits10_1 = (i >> 1) & 0x3FF
+    val bit11 = (i >> 11) & 0x1
+    val bits19_12 = (i >> 12) & 0xFF
+    (bit20 << 31) | (bits19_12 << 12) | (bit11 << 20) |
+      (bits10_1 << 21) | (rd << 7) | 0x6f
+  }
   def csr(funct3: Int, rd: Int, csrAddr: Int, rs1OrZimm: Int): BigInt = {
     ((csrAddr & 0xFFF) << 20) | ((rs1OrZimm & 0x1F) << 15) |
       ((funct3 & 0x7) << 12) | (rd << 7) | 0x73
@@ -54,6 +63,7 @@ class CoreSpec extends AnyFlatSpec with ChiselScalatestTester {
 
   it should "execute ADDI then commit" in {
     test(new Core).withAnnotations(Seq(WriteVcdAnnotation)) { c =>
+      c.io.timerInterrupt.poke(false.B)
       // 程序：x1=42, x2=52, x3=94
       val prog = Array[BigInt](
         addi(1, 0, 42),   // x1 = 42
@@ -102,6 +112,7 @@ class CoreSpec extends AnyFlatSpec with ChiselScalatestTester {
 
   it should "execute store, load, and dependent ALU operations" in {
     test(new Core) { c =>
+      c.io.timerInterrupt.poke(false.B)
       val prog = Array[BigInt](
         addi(1, 0, 0x100), // base
         addi(2, 0, 42),    // value
@@ -147,6 +158,7 @@ class CoreSpec extends AnyFlatSpec with ChiselScalatestTester {
 
   it should "trap on ECALL and return with MRET" in {
     test(new Core) { c =>
+      c.io.timerInterrupt.poke(false.B)
       val CSRRW = 1
       val CSRRS = 2
       val prog = Array[BigInt](
@@ -186,6 +198,62 @@ class CoreSpec extends AnyFlatSpec with ChiselScalatestTester {
         s"x2 should observe mepc=8, commits: ${commits}")
       assert(commits.find(_._1 == 3).exists(_._2 == 7),
         s"x3 should execute after MRET, commits: ${commits}")
+    }
+  }
+
+  it should "take a machine timer interrupt at an instruction boundary" in {
+    test(new Core) { c =>
+      val CSRRW = 1
+      val CSRRS = 2
+      val prog = Array[BigInt](
+        addi(1, 0, 0x40),        // 0x00: timer vector
+        csr(CSRRW, 0, 0x305, 1), // 0x04: mtvec = 0x40
+        addi(1, 0, 0x80),        // 0x08: mie.MTIE
+        csr(CSRRW, 0, 0x304, 1), // 0x0c
+        addi(1, 0, 0x8),         // 0x10: mstatus.MIE
+        csr(CSRRW, 0, 0x300, 1), // 0x14
+        addi(5, 0, 1),           // 0x18: interrupted PC should be here or later
+        addi(6, 0, 2),           // 0x1c
+        jal(0, 0),                // 0x20: wait for interrupt
+        NOP_LIT, NOP_LIT, NOP_LIT,
+        NOP_LIT, NOP_LIT, NOP_LIT, NOP_LIT,
+        csr(CSRRS, 10, 0x342, 0), // 0x40: mcause
+        csr(CSRRS, 11, 0x341, 0), // 0x44: mepc
+        addi(12, 0, 3)            // 0x48: marker
+      )
+
+      c.io.dmem.rdata.poke(0.U)
+      c.io.timerInterrupt.poke(false.B)
+      var commits = scala.collection.mutable.ListBuffer[(Int, BigInt)]()
+      var pendingSeen = false
+      var fireSeen = false
+
+      for (cycle <- 0 until 120) {
+        val addr = c.io.imem.addr.peek().litValue
+        val idx = (addr / 4).toInt
+        val inst = if (idx >= 0 && idx < prog.length) prog(idx) else NOP_LIT
+        c.io.imem.inst.poke(inst.U)
+        c.io.timerInterrupt.poke((cycle >= 18).B)
+        pendingSeen ||= c.io.dbgTimerPending.peek().litToBoolean
+        fireSeen ||= c.io.dbgInterruptFire.peek().litToBoolean
+
+        if (c.io.dbgCommitValid.peek().litToBoolean &&
+            c.io.dbgCommitWritesReg.peek().litToBoolean) {
+          commits += ((c.io.dbgCommitRd.peek().litValue.toInt,
+                       c.io.dbgCommitData.peek().litValue))
+        }
+
+        c.clock.step(1)
+      }
+
+      assert(pendingSeen, s"timer pending should become visible, commits: ${commits}")
+      assert(fireSeen, s"timer interrupt should fire, commits: ${commits}")
+      assert(commits.exists { case (rd, data) => rd == 10 && data == BigInt("80000007", 16) },
+        s"x10 should observe timer interrupt mcause, commits: ${commits}")
+      assert(commits.exists { case (rd, data) => rd == 11 && data >= 0x18 && data < 0x40 },
+        s"x11 should observe interrupted mepc in mainline, commits: ${commits}")
+      assert(commits.find(_._1 == 12).exists(_._2 == 3),
+        s"x12 should execute timer handler marker, commits: ${commits}")
     }
   }
 }

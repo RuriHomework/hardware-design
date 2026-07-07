@@ -31,6 +31,7 @@ class Core extends Module {
       val wen   = Output(Bool())
       val rdata = Input(UInt(XLen.W))
     }
+    val timerInterrupt = Input(Bool())
     // 调试观察口
     val dbgCommit = Output(new RetireInfo)
     val dbgCommitValid = Output(Bool())
@@ -48,6 +49,8 @@ class Core extends Module {
     val dbgFreeAvail = Output(Bool())
     val dbgCdbValid = Output(Bool())
     val dbgCdbPdst = Output(UInt(LogNumPhys.W))
+    val dbgTimerPending = Output(Bool())
+    val dbgInterruptFire = Output(Bool())
   })
 
   val bp    = Module(new BranchPredictor)
@@ -80,6 +83,7 @@ class Core extends Module {
   be.io.dispatch := fetch.io.dispatch
   fetch.io.dispatchReady := be.io.dispatchReady
   be.io.dmem.rdata := io.dmem.rdata
+  be.io.timerInterrupt := io.timerInterrupt
   io.dmem.addr  := be.io.dmem.addr
   io.dmem.wdata := be.io.dmem.wdata
   io.dmem.wmask := be.io.dmem.wmask
@@ -100,4 +104,6 @@ class Core extends Module {
   io.dbgFreeAvail := be.io.dbgFreeAvail
   io.dbgCdbValid := be.io.dbgCdbValid
   io.dbgCdbPdst := be.io.dbgCdbPdst
+  io.dbgTimerPending := be.io.dbgTimerPending
+  io.dbgInterruptFire := be.io.dbgInterruptFire
 }
