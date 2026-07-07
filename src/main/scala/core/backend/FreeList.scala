@@ -19,6 +19,9 @@ import isa.CoreConfig._
  * 单发射简化：每周期最多 1 alloc + 1 free。
  */
 class FreeList extends Module {
+  // 空闲队列容量 = NumPhysRegs - NumLogicalRegs
+  val FreeDepth = NumPhysRegs - NumLogicalRegs  // 32
+
   val io = IO(new Bundle {
     val allocReq  = Input(Bool())        // 需要分配（指令有 rd）
     val allocAvail= Output(Bool())       // 有空闲
@@ -26,10 +29,21 @@ class FreeList extends Module {
 
     val freeReq   = Input(Bool())        // 释放
     val freePdst  = Input(UInt(LogNumPhys.W))
+
+    val checkpoint = Output(new Bundle {
+      val freeList = Vec(FreeDepth, UInt(LogNumPhys.W))
+      val head = UInt(log2Ceil(FreeDepth).W)
+      val tail = UInt(log2Ceil(FreeDepth).W)
+      val count = UInt(log2Ceil(FreeDepth + 1).W)
+    })
+    val restore = Input(Valid(new Bundle {
+      val freeList = Vec(FreeDepth, UInt(LogNumPhys.W))
+      val head = UInt(log2Ceil(FreeDepth).W)
+      val tail = UInt(log2Ceil(FreeDepth).W)
+      val count = UInt(log2Ceil(FreeDepth + 1).W)
+    }))
   })
 
-  // 空闲队列容量 = NumPhysRegs - NumLogicalRegs
-  val FreeDepth = NumPhysRegs - NumLogicalRegs  // 32
   val freeList  = RegInit(VecInit(
     (NumLogicalRegs until NumPhysRegs).map(_.U(LogNumPhys.W))))
   val head = RegInit(0.U(log2Ceil(FreeDepth).W))
@@ -41,12 +55,21 @@ class FreeList extends Module {
 
   io.allocAvail := canAlloc
   io.allocPdst  := freeList(head)
+  io.checkpoint.freeList := freeList
+  io.checkpoint.head := head
+  io.checkpoint.tail := tail
+  io.checkpoint.count := count
 
   // 同时 alloc + free
   val doAlloc = io.allocReq && canAlloc
   val doFree  = io.freeReq  && canFree
 
-  when(doAlloc && !doFree) {
+  when(io.restore.valid) {
+    freeList := io.restore.bits.freeList
+    head := io.restore.bits.head
+    tail := io.restore.bits.tail
+    count := io.restore.bits.count
+  }.elsewhen(doAlloc && !doFree) {
     head  := Mux(head === (FreeDepth - 1).U, 0.U, head + 1.U)
     count := count - 1.U
   }.elsewhen(doFree && !doAlloc) {

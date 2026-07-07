@@ -76,12 +76,22 @@ class Backend extends Module {
   val dispatchValid = io.dispatch.valid
   val instr = io.dispatch.instr
   val instrWritesReg = instr.writesReg && instr.rd =/= 0.U
-  val interruptFire = csr.io.interrupt.pending
-  val dispatchAccept = dispatchValid && !interruptFire
-  val controlInFlight = RegInit(false.B)
-  val dispatchIsControl = UopKind.isBranch(instr.uop) || UopKind.isSystem(instr.uop)
-  val commitIsControl = UopKind.isBranch(rob.io.commit.bits.uop) || UopKind.isSystem(rob.io.commit.bits.uop)
-  val canDispatch = dispatchAccept && !controlInFlight && rob.io.enqReady && issue.io.enqReady &&
+  val interruptPending = csr.io.interrupt.pending
+  val dispatchAccept = dispatchValid && !interruptPending
+  val systemInFlight = RegInit(false.B)
+  val branchCheckpointValid = RegInit(false.B)
+  val branchCheckpointRmt = Reg(Vec(NumLogicalRegs, UInt(LogNumPhys.W)))
+  val branchCheckpointFreeList = Reg(Vec(NumPhysRegs - NumLogicalRegs, UInt(LogNumPhys.W)))
+  val branchCheckpointFreeHead = Reg(UInt(log2Ceil(NumPhysRegs - NumLogicalRegs).W))
+  val branchCheckpointFreeTail = Reg(UInt(log2Ceil(NumPhysRegs - NumLogicalRegs).W))
+  val branchCheckpointFreeCount = Reg(UInt(log2Ceil(NumPhysRegs - NumLogicalRegs + 1).W))
+  val dispatchIsBranch = UopKind.isBranch(instr.uop)
+  val dispatchIsSystem = UopKind.isSystem(instr.uop)
+  val commitIsBranch = UopKind.isBranch(rob.io.commit.bits.uop)
+  val commitIsSystem = UopKind.isSystem(rob.io.commit.bits.uop)
+  val branchCheckpointBusy = branchCheckpointValid && (dispatchIsBranch || dispatchIsSystem)
+  val canDispatch = dispatchAccept && !systemInFlight && !branchCheckpointBusy &&
+    rob.io.enqReady && issue.io.enqReady &&
     (!instrWritesReg || free.io.allocAvail)
 
   // rename 查询
@@ -92,6 +102,10 @@ class Backend extends Module {
   rmt.io.newPdst := free.io.allocPdst
   rmt.io.update := canDispatch && instrWritesReg
   rmt.io.rollback := rob.io.rollback
+  val restoreBranchCheckpoint = rob.io.redirect.valid &&
+    rob.io.redirect.bits.cause === RedirectCause.MISPRED && branchCheckpointValid
+  rmt.io.restore.valid := restoreBranchCheckpoint
+  rmt.io.restore.bits := branchCheckpointRmt
 
   // ready 查询：用 PhysRegReady（以 pdst 为键）
   ready.io.query1 := rmt.io.rs1Pdst
@@ -103,6 +117,18 @@ class Backend extends Module {
   free.io.allocReq := canDispatch && instrWritesReg
   free.io.freeReq  := rob.io.freeReq
   free.io.freePdst := rob.io.freePdst
+  free.io.restore.valid := restoreBranchCheckpoint
+  val restoredFreeList = Wire(Vec(NumPhysRegs - NumLogicalRegs, UInt(LogNumPhys.W)))
+  restoredFreeList := branchCheckpointFreeList
+  val restoredFreeTailAfterCommit = Mux(branchCheckpointFreeTail === ((NumPhysRegs - NumLogicalRegs) - 1).U,
+    0.U, branchCheckpointFreeTail + 1.U)
+  when(rob.io.freeReq) {
+    restoredFreeList(branchCheckpointFreeTail) := rob.io.freePdst
+  }
+  free.io.restore.bits.freeList := restoredFreeList
+  free.io.restore.bits.head := branchCheckpointFreeHead
+  free.io.restore.bits.tail := Mux(rob.io.freeReq, restoredFreeTailAfterCommit, branchCheckpointFreeTail)
+  free.io.restore.bits.count := branchCheckpointFreeCount + Mux(rob.io.freeReq, 1.U, 0.U)
 
   // ROB 入队
   rob.io.enq.valid := canDispatch
@@ -132,17 +158,6 @@ class Backend extends Module {
   issue.io.enq.bits.predTaken  := instr.predTaken
   issue.io.enq.bits.predTarget := instr.predTarget
   issue.io.enq.bits.robIdx     := rob.io.enqIdx
-
-  when(interruptFire) {
-    controlInFlight := false.B
-  }.otherwise {
-    when(rob.io.commit.valid && commitIsControl) {
-      controlInFlight := false.B
-    }
-    when(rob.io.enq.valid && dispatchIsControl) {
-      controlInFlight := true.B
-    }
-  }
 
   // ===== PRF 读口 =====
   prf.io.rs1 := issue.io.prf.rs1
@@ -272,6 +287,9 @@ class Backend extends Module {
   csr.io.cmd.bits.pc := deq.bits.pc
   csr.io.cmd.bits.addr := deq.bits.imm.asUInt(11, 0)
   csr.io.cmd.bits.src := Mux(CsrFile.isImm(deq.bits.uop), deq.bits.zimm, deq.bits.a)
+  val backendDrainedForInterrupt = rob.io.dbgCount === 0.U && issue.io.dbgCount === 0.U &&
+    !lsu.io.busy && !mdu.io.busy
+  val interruptFire = interruptPending && backendDrainedForInterrupt
   csr.io.interrupt.fire := interruptFire
   csr.io.interrupt.pc := instr.pc
 
@@ -301,6 +319,55 @@ class Backend extends Module {
       mduWbUop := deq.bits.uop
     }.elsewhen(CsrFile.accepts(deq.bits.uop)) {
       csrDone := true.B
+    }
+  }
+
+  val freeDepth = NumPhysRegs - NumLogicalRegs
+  val nextFreeSnapshotList = Wire(Vec(freeDepth, UInt(LogNumPhys.W)))
+  nextFreeSnapshotList := free.io.checkpoint.freeList
+  val freeHeadAfterAlloc = Mux(free.io.checkpoint.head === (freeDepth - 1).U,
+    0.U, free.io.checkpoint.head + 1.U)
+  val freeTailAfterFree = Mux(free.io.checkpoint.tail === (freeDepth - 1).U,
+    0.U, free.io.checkpoint.tail + 1.U)
+  val snapshotDoesAlloc = rob.io.enq.valid && instrWritesReg
+  val snapshotDoesFree = rob.io.freeReq
+  when(snapshotDoesFree) {
+    nextFreeSnapshotList(free.io.checkpoint.tail) := rob.io.freePdst
+  }
+  val nextFreeSnapshotHead = Mux(snapshotDoesAlloc, freeHeadAfterAlloc, free.io.checkpoint.head)
+  val nextFreeSnapshotTail = Mux(snapshotDoesFree, freeTailAfterFree, free.io.checkpoint.tail)
+  val nextFreeSnapshotCount = free.io.checkpoint.count +
+    Mux(snapshotDoesFree, 1.U, 0.U) - Mux(snapshotDoesAlloc, 1.U, 0.U)
+
+  when(interruptFire || restoreBranchCheckpoint) {
+    systemInFlight := false.B
+    branchCheckpointValid := false.B
+  }.otherwise {
+    when(rob.io.commit.valid && commitIsSystem) {
+      systemInFlight := false.B
+    }
+    when(rob.io.enq.valid && dispatchIsSystem) {
+      systemInFlight := true.B
+    }
+    when(rob.io.commit.valid && commitIsBranch) {
+      branchCheckpointValid := false.B
+    }
+    when(branchCheckpointValid && rob.io.freeReq && !commitIsBranch) {
+      branchCheckpointFreeList(branchCheckpointFreeTail) := rob.io.freePdst
+      branchCheckpointFreeTail := Mux(branchCheckpointFreeTail === (freeDepth - 1).U,
+        0.U, branchCheckpointFreeTail + 1.U)
+      branchCheckpointFreeCount := branchCheckpointFreeCount + 1.U
+    }
+    when(rob.io.enq.valid && dispatchIsBranch && !branchCheckpointValid) {
+      branchCheckpointValid := true.B
+      branchCheckpointRmt := rmt.io.checkpoint
+      when(instrWritesReg) {
+        branchCheckpointRmt(instr.rd) := free.io.allocPdst
+      }
+      branchCheckpointFreeList := nextFreeSnapshotList
+      branchCheckpointFreeHead := nextFreeSnapshotHead
+      branchCheckpointFreeTail := nextFreeSnapshotTail
+      branchCheckpointFreeCount := nextFreeSnapshotCount
     }
   }
 
@@ -341,7 +408,8 @@ class Backend extends Module {
 
   // ===== dispatchReady =====
   // ROB 有空 + (不写寄存器 或 FreeList 有空) + IssueQueue 有空
-  io.dispatchReady := !interruptFire && !controlInFlight && rob.io.enqReady && issue.io.enqReady &&
+  io.dispatchReady := !interruptPending && !systemInFlight && !branchCheckpointBusy &&
+    rob.io.enqReady && issue.io.enqReady &&
     (!instrWritesReg || free.io.allocAvail)
 
   // ===== 调试：commit 时的 rd + data =====
@@ -355,6 +423,6 @@ class Backend extends Module {
   io.dbgFreeAvail := free.io.allocAvail
   io.dbgCdbValid := cdb.valid
   io.dbgCdbPdst := cdb.bits.pdst
-  io.dbgTimerPending := csr.io.interrupt.pending
+  io.dbgTimerPending := interruptPending
   io.dbgInterruptFire := interruptFire
 }

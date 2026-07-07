@@ -93,10 +93,12 @@ class IssueQueue extends Module {
     val predTaken  = Bool()
     val predTarget = UInt(PcWidth.W)
     val robIdx     = UInt(RobIdWidth.W)
+    val age         = UInt(32.W)
   }
 
   val entries = RegInit(VecInit(Seq.fill(IssueEntries)(0.U.asTypeOf(new QEntry))))
   val count = RegInit(0.U((log2Ceil(IssueEntries) + 1).W))
+  val nextAge = RegInit(0.U(32.W))
 
   // CDB 监听：更新所有项的 ready 位
   for (e <- entries) {
@@ -117,20 +119,24 @@ class IssueQueue extends Module {
     count := 0.U
   }
 
-  // 找第一个就绪项
-  // 用优先级编码扫描：遍历每项，选第一个 valid 且 ready 的
+  // 找最老的就绪项，避免低下标空洞让年轻 store 越过更老 store。
   val readyMask = entries.map(e => e.valid && e.rs1Ready && e.rs2Ready)
-  val readyIdxVec = PriorityEncoder(readyMask)
   val hasReady = count > 0.U && readyMask.reduce(_ || _)
-  val readyIdx = readyIdxVec
+  val oldestReadyMask = (0 until IssueEntries).map { i =>
+    val olderReady = (0 until IssueEntries).map { j =>
+      readyMask(j) && entries(j).age < entries(i).age
+    }.reduce(_ || _)
+    readyMask(i) && !olderReady
+  }
+  val readyIdx = PriorityEncoder(oldestReadyMask)
 
   // PRF 读口：连到就绪项
   io.prf.rs1 := Mux(hasReady, entries(readyIdx).prs1, 0.U)
   io.prf.rs2 := Mux(hasReady, entries(readyIdx).prs2, 0.U)
 
   // 发射
-  io.deq.valid := hasReady && count > 0.U
-  when(hasReady) {
+  io.deq.valid := hasReady && count > 0.U && !io.flush.valid
+  when(hasReady && !io.flush.valid) {
     val e = entries(readyIdx)
     io.deq.bits.uop        := e.uop
     io.deq.bits.pc         := e.pc
@@ -180,6 +186,8 @@ class IssueQueue extends Module {
     entries(idx).predTaken  := io.enq.bits.predTaken
     entries(idx).predTarget := io.enq.bits.predTarget
     entries(idx).robIdx     := io.enq.bits.robIdx
+    entries(idx).age        := nextAge
+    nextAge := nextAge + 1.U
   }
 
   // 出队后清空

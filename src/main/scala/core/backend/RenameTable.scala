@@ -37,6 +37,9 @@ class RenameTable extends Module {
       val lrd = UInt(LogNumLogical.W)
       val pdst = UInt(LogNumPhys.W)  // 恢复为这个映射
     }))
+
+    val checkpoint = Output(Vec(NumLogicalRegs, UInt(LogNumPhys.W)))
+    val restore = Input(Valid(Vec(NumLogicalRegs, UInt(LogNumPhys.W))))
   })
 
   val mapTable = RegInit(VecInit(
@@ -47,6 +50,7 @@ class RenameTable extends Module {
   io.rs2Pdst := Mux(io.rs2 === 0.U, 0.U, mapTable(io.rs2))
 
   io.stalePdst := mapTable(io.rd)
+  io.checkpoint := mapTable
 
   // 更新映射
   when(io.update && io.writesReg && io.rd =/= 0.U) {
@@ -56,5 +60,10 @@ class RenameTable extends Module {
   // 回滚
   when(io.rollback.valid && io.rollback.bits.lrd =/= 0.U) {
     mapTable(io.rollback.bits.lrd) := io.rollback.bits.pdst
+  }
+
+  when(io.restore.valid) {
+    mapTable := io.restore.bits
+    mapTable(0) := 0.U
   }
 }

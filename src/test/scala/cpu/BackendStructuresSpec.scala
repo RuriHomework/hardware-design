@@ -36,6 +36,7 @@ class BackendStructuresSpec extends AnyFlatSpec with ChiselScalatestTester {
       r.io.newPdst.poke(40.U)
       r.io.update.poke(true.B)
       r.io.rollback.valid.poke(false.B)
+      r.io.restore.valid.poke(false.B)
       r.io.stalePdst.expect(5.U)
       r.clock.step()
 
@@ -55,6 +56,7 @@ class BackendStructuresSpec extends AnyFlatSpec with ChiselScalatestTester {
     test(new FreeList) { f =>
       f.io.freeReq.poke(false.B)
       f.io.allocReq.poke(false.B)
+      f.io.restore.valid.poke(false.B)
       f.io.allocAvail.expect(true.B)
       f.io.allocPdst.expect(32.U)
 
