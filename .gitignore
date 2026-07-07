@@ -21,6 +21,9 @@ build/
 sim/obj_dir/
 simx.vcd
 
+# Simulation programs
+sim/programs/**/build/
+
 # macOS
 .DS_Store
 

@@ -23,6 +23,11 @@ RTL_FILE  := $(RTL_DIR)/$(RTL_TOP).sv
 # Verilator 工作目录
 OBJ_DIR   := $(CURDIR)/obj_dir
 TB_SRC    ?= cpp/tb_core.cpp
+PROG_DIR  ?= programs/baremetal
+PROG_NAME ?= smoke
+PROG_TEXT ?= $(PROG_DIR)/build/$(PROG_NAME).text.bin
+PROG_DATA ?= $(PROG_DIR)/build/$(PROG_NAME).data.bin
+MAX_CYCLES ?= 200000
 
 # Verilator flags
 VFLAGS := --top-module $(RTL_TOP)
@@ -36,11 +41,15 @@ VFLAGS += -Wno-DECLFILENAME
 VFLAGS += -CFLAGS -std=c++17
 
 # 默认目标：编译并运行仿真
-.PHONY: sim wave clean rtl
+.PHONY: sim sim-program wave wave-program clean rtl program
 
 sim: rtl $(OBJ_DIR)/V$(RTL_TOP)
 	@echo "==> Running simulation"
 	$(OBJ_DIR)/V$(RTL_TOP)
+
+sim-program: program rtl $(OBJ_DIR)/V$(RTL_TOP)
+	@echo "==> Running program simulation"
+	$(OBJ_DIR)/V$(RTL_TOP) +text=$(PROG_TEXT) +data=$(PROG_DATA) +max-cycles=$(MAX_CYCLES)
 
 # 带波形版本：用 ENABLE_TRACE=1 触发 TB 里的 VCD dump
 wave: rtl $(OBJ_DIR)/V$(RTL_TOP)
@@ -48,6 +57,15 @@ wave: rtl $(OBJ_DIR)/V$(RTL_TOP)
 	ENABLE_TRACE=1 $(OBJ_DIR)/V$(RTL_TOP)
 	@echo "==> VCD waveform: $(CURDIR)/simx.vcd"
 	@echo "   打开: gtkwave $(CURDIR)/simx.vcd"
+
+wave-program: program rtl $(OBJ_DIR)/V$(RTL_TOP)
+	@echo "==> Running program simulation with VCD trace"
+	ENABLE_TRACE=1 $(OBJ_DIR)/V$(RTL_TOP) +text=$(PROG_TEXT) +data=$(PROG_DATA) +max-cycles=$(MAX_CYCLES)
+	@echo "==> VCD waveform: $(CURDIR)/simx.vcd"
+
+program:
+	@echo "==> Building bare-metal program"
+	$(MAKE) -C $(PROG_DIR) TARGET=$(PROG_NAME)
 
 # 生成 SystemVerilog
 rtl:

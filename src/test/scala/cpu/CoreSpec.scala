@@ -21,6 +21,8 @@ class CoreSpec extends AnyFlatSpec with ChiselScalatestTester {
   val OP_IMM  = 0x13
   val OP_REG  = 0x33
   val OP_LUI  = 0x37
+  val OP_LOAD = 0x03
+  val OP_STORE = 0x23
 
   def addi(rd: Int, rs1: Int, imm: Int): BigInt = {
     val i = imm & 0xFFF
@@ -28,6 +30,16 @@ class CoreSpec extends AnyFlatSpec with ChiselScalatestTester {
   }
   def add(rd: Int, rs1: Int, rs2: Int): BigInt = {
     ((0 << 25) | (rs2 << 20) | (rs1 << 15) | (0 << 12) | (rd << 7) | OP_REG)
+  }
+  def lw(rd: Int, rs1: Int, imm: Int): BigInt = {
+    val i = imm & 0xFFF
+    ((i << 20) | (rs1 << 15) | (2 << 12) | (rd << 7) | OP_LOAD)
+  }
+  def sw(rs2: Int, rs1: Int, imm: Int): BigInt = {
+    val i = imm & 0xFFF
+    val immHi = (i >> 5) & 0x7F
+    val immLo = i & 0x1F
+    ((immHi << 25) | (rs2 << 20) | (rs1 << 15) | (2 << 12) | (immLo << 7) | OP_STORE)
   }
   def lui(rd: Int, imm: Int): BigInt = {
     ((imm & 0xFFFFF) << 12) | (rd << 7) | OP_LUI
@@ -79,6 +91,51 @@ class CoreSpec extends AnyFlatSpec with ChiselScalatestTester {
       // x3 = 94
       assert(commits.find(_._1 == 3).exists(_._2 == 94),
         s"x3 should be 94, commits: ${commits}")
+    }
+  }
+
+  it should "execute store, load, and dependent ALU operations" in {
+    test(new Core) { c =>
+      val prog = Array[BigInt](
+        addi(1, 0, 0x100), // base
+        addi(2, 0, 42),    // value
+        sw(2, 1, 0),
+        lw(3, 1, 0),
+        addi(4, 3, 1)      // depends on loaded value
+      )
+      val dmem = scala.collection.mutable.Map[BigInt, BigInt]().withDefaultValue(0)
+      var pendingReadAddr = BigInt(0)
+      var commits = scala.collection.mutable.ListBuffer[(Int, BigInt)]()
+
+      for (cycle <- 0 until 100) {
+        val addr = c.io.imem.addr.peek().litValue
+        val idx = (addr / 4).toInt
+        val inst = if (idx >= 0 && idx < prog.length) prog(idx) else NOP_LIT
+        c.io.imem.inst.poke(inst.U)
+        c.io.dmem.rdata.poke(dmem(pendingReadAddr).U)
+
+        if (c.io.dmem.wen.peek().litToBoolean) {
+          val waddr = c.io.dmem.addr.peek().litValue & BigInt("fffffffc", 16)
+          val wdata = c.io.dmem.wdata.peek().litValue
+          dmem(waddr) = wdata
+        } else {
+          pendingReadAddr = c.io.dmem.addr.peek().litValue & BigInt("fffffffc", 16)
+        }
+
+        if (c.io.dbgCommitValid.peek().litToBoolean &&
+            c.io.dbgCommitWritesReg.peek().litToBoolean) {
+          commits += ((c.io.dbgCommitRd.peek().litValue.toInt,
+                       c.io.dbgCommitData.peek().litValue))
+        }
+
+        c.clock.step(1)
+      }
+
+      assert(dmem(0x100) == 42, s"store should write 42, dmem: ${dmem}")
+      assert(commits.find(_._1 == 3).exists(_._2 == 42),
+        s"x3 should load 42, commits: ${commits}")
+      assert(commits.find(_._1 == 4).exists(_._2 == 43),
+        s"x4 should be 43, commits: ${commits}")
     }
   }
 }

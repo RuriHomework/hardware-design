@@ -129,6 +129,17 @@ class Backend extends Module {
   // ready array 供 issue 查询用——这里简化：ready 由 rmt 直接给
   // （rmt.rs1Ready 已经综合了 PRF 的 ready 位）
 
+  val deq = issue.io.deq
+  val deqIsLsu = deq.valid && Lsu.accepts(deq.bits.uop)
+  val deqIsMdu = deq.valid && MulDiv.accepts(deq.bits.uop)
+  val lsuRespDone = lsu.io.busy
+  val mduRespDone = mdu.io.done
+  val wbBusy = lsuRespDone || mduRespDone
+  val canIssue = !wbBusy && !(deqIsLsu && lsu.io.busy) && !(deqIsMdu && mdu.io.busy)
+  issue.io.deqReady := canIssue
+  val lsuImmediateDone = deq.valid && canIssue &&
+    (UopKind.isStore(deq.bits.uop) || deq.bits.uop === FENCE)
+
   // ===== CDB：执行单元结果广播 =====
   // 单发射下，4 个执行单元结果做优先级仲裁，选一个上 CDB
   val cdb = Wire(Valid(new CdbEntry))
@@ -136,6 +147,15 @@ class Backend extends Module {
   val bruDone = WireDefault(false.B)
   val lsuDone = WireDefault(false.B)
   val mduDone = WireDefault(false.B)
+  val lsuWbRobIdx = RegInit(0.U(RobIdWidth.W))
+  val lsuWbPdst = RegInit(0.U(LogNumPhys.W))
+  val lsuWbUop = RegInit(Uop.NOP)
+  val mduWbRobIdx = RegInit(0.U(RobIdWidth.W))
+  val mduWbPdst = RegInit(0.U(LogNumPhys.W))
+  val mduWbUop = RegInit(Uop.NOP)
+
+  lsuDone := lsuRespDone || lsuImmediateDone
+  mduDone := mdu.io.done
 
   // 仲裁：ALU > BRU > LSU > MulDiv
   cdb.valid := false.B
@@ -155,16 +175,16 @@ class Backend extends Module {
     cdbWritesReg := false.B
   }.elsewhen(lsuDone) {
     cdb.valid := true.B
-    cdb.bits.pdst := issue.io.deq.bits.pdst
+    cdb.bits.pdst := Mux(lsu.io.busy, lsuWbPdst, issue.io.deq.bits.pdst)
     cdb.bits.data := lsu.io.result
-    cdb.bits.robIdx := issue.io.deq.bits.robIdx
-    cdbWritesReg := UopKind.writesReg(issue.io.deq.bits.uop)
+    cdb.bits.robIdx := Mux(lsu.io.busy, lsuWbRobIdx, issue.io.deq.bits.robIdx)
+    cdbWritesReg := UopKind.writesReg(Mux(lsu.io.busy, lsuWbUop, issue.io.deq.bits.uop))
   }.elsewhen(mduDone) {
     cdb.valid := true.B
-    cdb.bits.pdst := issue.io.deq.bits.pdst
+    cdb.bits.pdst := mduWbPdst
     cdb.bits.data := mdu.io.result
-    cdb.bits.robIdx := issue.io.deq.bits.robIdx
-    cdbWritesReg := UopKind.writesReg(issue.io.deq.bits.uop)
+    cdb.bits.robIdx := mduWbRobIdx
+    cdbWritesReg := UopKind.writesReg(mduWbUop)
   }
 
   // IssueQueue 监听 CDB
@@ -182,12 +202,9 @@ class Backend extends Module {
   ready.io.clearReady.bits  := free.io.allocPdst
 
   // ===== 执行单元派发 =====
-  val deq = issue.io.deq
   // 默认不派发
   aluDone := false.B
   bruDone := false.B
-  lsuDone := false.B
-  mduDone := false.B
 
   alu.io.uop := deq.bits.uop
   alu.io.a   := Mux(deq.bits.uop === AUIPC, deq.bits.pc, deq.bits.a)
@@ -203,7 +220,7 @@ class Backend extends Module {
   bru.io.predTaken := deq.bits.predTaken
   bru.io.predTarget := deq.bits.predTarget
 
-  lsu.io.cmd.valid := deq.valid && Lsu.accepts(deq.bits.uop)
+  lsu.io.cmd.valid := deq.valid && canIssue && Lsu.accepts(deq.bits.uop)
   lsu.io.cmd.bits.uop := deq.bits.uop
   lsu.io.cmd.bits.a   := deq.bits.a
   lsu.io.cmd.bits.b   := deq.bits.b
@@ -214,17 +231,13 @@ class Backend extends Module {
   io.dmem.wmask := lsu.io.dmem.wmask
   io.dmem.wen   := lsu.io.dmem.wen
 
-  mdu.io.cmd.valid := deq.valid && MulDiv.accepts(deq.bits.uop)
+  mdu.io.cmd.valid := deq.valid && canIssue && MulDiv.accepts(deq.bits.uop)
   mdu.io.cmd.bits.uop := deq.bits.uop
   mdu.io.cmd.bits.a   := deq.bits.a
   mdu.io.cmd.bits.b   := deq.bits.b
 
-  val deqIsLsu = deq.valid && Lsu.accepts(deq.bits.uop)
-  val deqIsMdu = deq.valid && MulDiv.accepts(deq.bits.uop)
-  issue.io.deqReady := !(deqIsLsu && lsu.io.busy) && !(deqIsMdu && mdu.io.busy)
-
   // 派发逻辑：根据 uop 路由到对应单元
-  when(deq.valid && issue.io.deqReady) {
+  when(deq.valid && canIssue) {
     when(Alu.accepts(deq.bits.uop)) {
       aluDone := true.B
     }.elsewhen(Bru.accepts(deq.bits.uop)) {
@@ -240,9 +253,13 @@ class Backend extends Module {
       }
     }.elsewhen(Lsu.accepts(deq.bits.uop)) {
       // LSU 多周期，done 由内部给
-      lsuDone := lsu.io.done
+      lsuWbRobIdx := deq.bits.robIdx
+      lsuWbPdst := deq.bits.pdst
+      lsuWbUop := deq.bits.uop
     }.elsewhen(MulDiv.accepts(deq.bits.uop)) {
-      mduDone := mdu.io.done
+      mduWbRobIdx := deq.bits.robIdx
+      mduWbPdst := deq.bits.pdst
+      mduWbUop := deq.bits.uop
     }
   }
 
