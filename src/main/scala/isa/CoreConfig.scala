@@ -58,7 +58,9 @@ object Uop extends ChiselEnum {
   val MUL, MULH, MULHSU, MULHU = Value
   val DIV, DIVU, REM, REMU     = Value
   // ---- 系统级 ----
-  val ECALL, EBREAK = Value
+  val CSRRW, CSRRS, CSRRC = Value
+  val CSRRWI, CSRRSI, CSRRCI = Value
+  val ECALL, EBREAK, MRET = Value
   val NOP            = Value
 }
 
@@ -97,6 +99,13 @@ object UopKind {
     u === DIV || u === DIVU || u === REM || u === REMU
   }
   def isMem(u: Uop.Type): Bool = isLoad(u) || isStore(u)
+  def isCsr(u: Uop.Type): Bool = {
+    import Uop._
+    u === CSRRW || u === CSRRS || u === CSRRC ||
+    u === CSRRWI || u === CSRRSI || u === CSRRCI
+  }
+  def isSystem(u: Uop.Type): Bool = isCsr(u) || u === Uop.ECALL ||
+    u === Uop.EBREAK || u === Uop.MRET
   def writesReg(u: Uop.Type): Bool = !isStore(u) && u =/= Uop.ECALL &&
-    u =/= Uop.EBREAK && u =/= Uop.FENCE && u =/= Uop.NOP
+    u =/= Uop.EBREAK && u =/= Uop.MRET && u =/= Uop.FENCE && u =/= Uop.NOP
 }

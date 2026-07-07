@@ -44,6 +44,12 @@ class CoreSpec extends AnyFlatSpec with ChiselScalatestTester {
   def lui(rd: Int, imm: Int): BigInt = {
     ((imm & 0xFFFFF) << 12) | (rd << 7) | OP_LUI
   }
+  def csr(funct3: Int, rd: Int, csrAddr: Int, rs1OrZimm: Int): BigInt = {
+    ((csrAddr & 0xFFF) << 20) | ((rs1OrZimm & 0x1F) << 15) |
+      ((funct3 & 0x7) << 12) | (rd << 7) | 0x73
+  }
+  def ecall: BigInt = 0x00000073L
+  def mret: BigInt = 0x30200073L
   val NOP_LIT: BigInt = 0x00000013L
 
   it should "execute ADDI then commit" in {
@@ -136,6 +142,50 @@ class CoreSpec extends AnyFlatSpec with ChiselScalatestTester {
         s"x3 should load 42, commits: ${commits}")
       assert(commits.find(_._1 == 4).exists(_._2 == 43),
         s"x4 should be 43, commits: ${commits}")
+    }
+  }
+
+  it should "trap on ECALL and return with MRET" in {
+    test(new Core) { c =>
+      val CSRRW = 1
+      val CSRRS = 2
+      val prog = Array[BigInt](
+        addi(1, 0, 0x20),        // 0x00: trap vector
+        csr(CSRRW, 0, 0x305, 1), // 0x04: csrw mtvec, x1
+        ecall,                   // 0x08: trap to 0x20
+        addi(3, 0, 7),           // 0x0c: resumed code
+        NOP_LIT,                 // 0x10
+        NOP_LIT,                 // 0x14
+        NOP_LIT,                 // 0x18
+        NOP_LIT,                 // 0x1c
+        csr(CSRRS, 2, 0x341, 0), // 0x20: csrr x2, mepc
+        addi(2, 2, 4),           // 0x24: skip ecall
+        csr(CSRRW, 0, 0x341, 2), // 0x28: csrw mepc, x2
+        mret                     // 0x2c
+      )
+
+      c.io.dmem.rdata.poke(0.U)
+      var commits = scala.collection.mutable.ListBuffer[(Int, BigInt)]()
+
+      for (_ <- 0 until 120) {
+        val addr = c.io.imem.addr.peek().litValue
+        val idx = (addr / 4).toInt
+        val inst = if (idx >= 0 && idx < prog.length) prog(idx) else NOP_LIT
+        c.io.imem.inst.poke(inst.U)
+
+        if (c.io.dbgCommitValid.peek().litToBoolean &&
+            c.io.dbgCommitWritesReg.peek().litToBoolean) {
+          commits += ((c.io.dbgCommitRd.peek().litValue.toInt,
+                       c.io.dbgCommitData.peek().litValue))
+        }
+
+        c.clock.step(1)
+      }
+
+      assert(commits.find(_._1 == 2).exists(_._2 == 8),
+        s"x2 should observe mepc=8, commits: ${commits}")
+      assert(commits.find(_._1 == 3).exists(_._2 == 7),
+        s"x3 should execute after MRET, commits: ${commits}")
     }
   }
 }

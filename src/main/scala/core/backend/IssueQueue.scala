@@ -29,6 +29,7 @@ class IssueQueue extends Module {
       val prs2   = UInt(LogNumPhys.W)
       val rs1Ready = Bool()
       val rs2Ready = Bool()
+      val zimm   = UInt(5.W)
       val imm    = SInt(ImmWidth.W)
       val usesRs1 = Bool()
       val usesRs2 = Bool()
@@ -46,6 +47,7 @@ class IssueQueue extends Module {
       val pdst   = UInt(LogNumPhys.W)
       val a      = UInt(XLen.W)   // 操作数 a（由 PRF 读）
       val b      = UInt(XLen.W)   // 操作数 b
+      val zimm   = UInt(5.W)
       val imm    = SInt(ImmWidth.W)
       val usesRs2 = Bool()        // true=R型 b=rs2; false=I型 b=imm
       val predTaken = Bool()
@@ -85,6 +87,7 @@ class IssueQueue extends Module {
     val rs1Ready   = Bool()
     val rs2Ready   = Bool()
     val imm        = SInt(ImmWidth.W)
+    val zimm       = UInt(5.W)
     val usesRs1    = Bool()
     val usesRs2    = Bool()
     val predTaken  = Bool()
@@ -137,6 +140,7 @@ class IssueQueue extends Module {
     io.deq.bits.a := Mux(e.usesRs1, io.prf.rs1Data, 0.U)
     io.deq.bits.b := Mux(e.usesRs2, io.prf.rs2Data, 0.U)
     io.deq.bits.imm        := e.imm
+    io.deq.bits.zimm       := e.zimm
     io.deq.bits.usesRs2    := e.usesRs2
     io.deq.bits.predTaken  := e.predTaken
     io.deq.bits.predTarget := e.predTarget
@@ -170,6 +174,7 @@ class IssueQueue extends Module {
     entries(idx).rs1Ready   := io.enq.bits.rs1Ready || enqRs1Wakeup
     entries(idx).rs2Ready   := io.enq.bits.rs2Ready || enqRs2Wakeup
     entries(idx).imm        := io.enq.bits.imm
+    entries(idx).zimm       := io.enq.bits.zimm
     entries(idx).usesRs1    := io.enq.bits.usesRs1
     entries(idx).usesRs2    := io.enq.bits.usesRs2
     entries(idx).predTaken  := io.enq.bits.predTaken

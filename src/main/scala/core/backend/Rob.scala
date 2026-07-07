@@ -127,7 +127,8 @@ class Rob extends Module {
     entries(io.wb.bits.robIdx).done := true.B
     entries(io.wb.bits.robIdx).taken := io.wb.bits.taken
     entries(io.wb.bits.robIdx).target := io.wb.bits.target
-    entries(io.wb.bits.robIdx).exception := io.wb.bits.cause === RedirectCause.EXCEPTION
+    entries(io.wb.bits.robIdx).exception :=
+      io.wb.bits.cause === RedirectCause.EXCEPTION || io.wb.bits.cause === RedirectCause.FLUSH
     when(io.wb.bits.cause === RedirectCause.MISPRED) {
       entries(io.wb.bits.robIdx).mispred := true.B
     }
@@ -159,10 +160,9 @@ class Rob extends Module {
 
   // 重定向：误预测或异常
   io.redirect.valid := canCommit && (headEntry.mispred || headEntry.exception)
-  io.redirect.bits.target := Mux(headEntry.exception,
-    headEntry.pc + 4.U,  // 异常简化：跳过该指令
-    Mux(headEntry.mispred && headEntry.taken, headEntry.target,
-      headEntry.pc + 4.U))
+  io.redirect.bits.target := Mux(headEntry.exception || headEntry.taken,
+    headEntry.target,
+    headEntry.pc + 4.U)
   io.redirect.bits.robIdx := head
   io.redirect.bits.cause  := Mux(headEntry.exception, RedirectCause.EXCEPTION,
     Mux(headEntry.mispred, RedirectCause.MISPRED, RedirectCause.NONE))

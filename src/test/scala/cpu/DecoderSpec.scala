@@ -112,6 +112,39 @@ class DecoderSpec extends AnyFlatSpec with ChiselScalatestTester {
     }
   }
 
+  it should "decode CSRRS x1, mstatus, x2" in {
+    test(new Decoder) { d =>
+      // CSRRS x1, mstatus, x2
+      d.io.inst.poke("h300120f3".U)
+      d.io.pc.poke(0.U)
+      d.io.out.uop.expect(CSRRS)
+      d.io.out.rd.expect(1.U)
+      d.io.out.rs1.expect(2.U)
+      d.io.out.usesRs1.expect(true.B)
+      d.io.out.writesReg.expect(true.B)
+      d.io.out.imm.expect(0x300.S)
+      d.io.illegal.expect(false.B)
+    }
+  }
+
+  it should "decode CSR immediate and MRET" in {
+    test(new Decoder) { d =>
+      // CSRRSI x3, mie, 8
+      d.io.inst.poke("h304461f3".U)
+      d.io.pc.poke(0.U)
+      d.io.out.uop.expect(CSRRSI)
+      d.io.out.rd.expect(3.U)
+      d.io.out.zimm.expect(8.U)
+      d.io.out.usesRs1.expect(false.B)
+      d.io.out.imm.expect(0x304.S)
+      d.io.illegal.expect(false.B)
+
+      d.io.inst.poke("h30200073".U)
+      d.io.out.uop.expect(MRET)
+      d.io.illegal.expect(false.B)
+    }
+  }
+
   it should "decode LUI x1, 0x10000" in {
     test(new Decoder) { d =>
       // LUI x1, 0x10000 = 0x000100b7

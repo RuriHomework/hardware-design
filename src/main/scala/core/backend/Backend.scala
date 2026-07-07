@@ -66,6 +66,7 @@ class Backend extends Module {
   val bru = Module(new Bru)
   val lsu = Module(new Lsu)
   val mdu = Module(new MulDiv)
+  val csr = Module(new CsrFile)
 
   // ===== Dispatch: rename + 分配 =====
   val dispatchValid = io.dispatch.valid
@@ -114,6 +115,7 @@ class Backend extends Module {
   issue.io.enq.bits.rs1Ready   := rs1ReadyVal
   issue.io.enq.bits.rs2Ready   := rs2ReadyVal
   issue.io.enq.bits.imm        := instr.imm
+  issue.io.enq.bits.zimm       := instr.zimm
   issue.io.enq.bits.usesRs1    := instr.usesRs1
   issue.io.enq.bits.usesRs2    := instr.usesRs2
   issue.io.enq.bits.predTaken  := instr.predTaken
@@ -147,6 +149,7 @@ class Backend extends Module {
   val bruDone = WireDefault(false.B)
   val lsuDone = WireDefault(false.B)
   val mduDone = WireDefault(false.B)
+  val csrDone = WireDefault(false.B)
   val lsuWbRobIdx = RegInit(0.U(RobIdWidth.W))
   val lsuWbPdst = RegInit(0.U(LogNumPhys.W))
   val lsuWbUop = RegInit(Uop.NOP)
@@ -157,7 +160,7 @@ class Backend extends Module {
   lsuDone := lsuRespDone || lsuImmediateDone
   mduDone := mdu.io.done
 
-  // 仲裁：ALU > BRU > LSU > MulDiv
+  // 仲裁：ALU > BRU > LSU > MulDiv > CSR
   cdb.valid := false.B
   cdb.bits := 0.U.asTypeOf(new CdbEntry)
   val cdbWritesReg = WireDefault(false.B)
@@ -185,6 +188,12 @@ class Backend extends Module {
     cdb.bits.data := mdu.io.result
     cdb.bits.robIdx := mduWbRobIdx
     cdbWritesReg := UopKind.writesReg(mduWbUop)
+  }.elsewhen(csrDone) {
+    cdb.valid := true.B
+    cdb.bits.pdst := issue.io.deq.bits.pdst
+    cdb.bits.data := csr.io.result
+    cdb.bits.robIdx := issue.io.deq.bits.robIdx
+    cdbWritesReg := UopKind.writesReg(issue.io.deq.bits.uop)
   }
 
   // IssueQueue 监听 CDB
@@ -236,6 +245,12 @@ class Backend extends Module {
   mdu.io.cmd.bits.a   := deq.bits.a
   mdu.io.cmd.bits.b   := deq.bits.b
 
+  csr.io.cmd.valid := deq.valid && canIssue && CsrFile.accepts(deq.bits.uop)
+  csr.io.cmd.bits.uop := deq.bits.uop
+  csr.io.cmd.bits.pc := deq.bits.pc
+  csr.io.cmd.bits.addr := deq.bits.imm.asUInt(11, 0)
+  csr.io.cmd.bits.src := Mux(CsrFile.isImm(deq.bits.uop), deq.bits.zimm, deq.bits.a)
+
   // 派发逻辑：根据 uop 路由到对应单元
   when(deq.valid && canIssue) {
     when(Alu.accepts(deq.bits.uop)) {
@@ -260,6 +275,8 @@ class Backend extends Module {
       mduWbRobIdx := deq.bits.robIdx
       mduWbPdst := deq.bits.pdst
       mduWbUop := deq.bits.uop
+    }.elsewhen(CsrFile.accepts(deq.bits.uop)) {
+      csrDone := true.B
     }
   }
 
@@ -271,9 +288,9 @@ class Backend extends Module {
   rob.io.wb.bits.data   := cdb.bits.data
   // 分支误预测 + 实际 taken/target（来自 BRU）
   rob.io.wb.bits.cause  := Mux(bru.io.mispred && bruDone,
-    RedirectCause.MISPRED, RedirectCause.NONE)
-  rob.io.wb.bits.taken  := bru.io.taken  && bruDone
-  rob.io.wb.bits.target := bru.io.target
+    RedirectCause.MISPRED, csr.io.cause)
+  rob.io.wb.bits.taken  := (bru.io.taken && bruDone) || csr.io.redirect
+  rob.io.wb.bits.target := Mux(csr.io.redirect, csr.io.target, bru.io.target)
 
   // ===== IssueQueue flush =====
   issue.io.flush.valid := rob.io.flushIssue

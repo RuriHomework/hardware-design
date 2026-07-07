@@ -39,6 +39,7 @@ class Decoder extends Module {
   out.rs1 := rs1(inst)
   out.rs2 := rs2(inst)
   out.rd  := rd(inst)
+  out.zimm := rs1(inst)
   out.imm := 0.S
 
   // funct3 → uop 的查表辅助：分支/Load/Store/算术共用
@@ -193,6 +194,29 @@ class Decoder extends Module {
       out.uop := Uop.NOP
       when(inst === "h00000073".U) { out.uop := ECALL  }
       when(inst === "h00100073".U) { out.uop := EBREAK }
+      when(inst === "h30200073".U) { out.uop := MRET   }
+      when(f3 =/= 0.U) {
+        out.imm := inst(31, 20).asSInt
+        out.writesReg := true.B
+        switch(f3) {
+          is("b001".U) {
+            out.uop := CSRRW
+            out.usesRs1 := true.B
+          }
+          is("b010".U) {
+            out.uop := CSRRS
+            out.usesRs1 := true.B
+          }
+          is("b011".U) {
+            out.uop := CSRRC
+            out.usesRs1 := true.B
+          }
+          is("b101".U) { out.uop := CSRRWI }
+          is("b110".U) { out.uop := CSRRSI }
+          is("b111".U) { out.uop := CSRRCI }
+        }
+        when(f3 === "b100".U) { illegal := true.B }
+      }
     }
   }
 

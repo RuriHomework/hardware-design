@@ -27,6 +27,7 @@ class DecodedInstr extends Bundle {
   val rs1    = UInt(LogNumLogical.W)
   val rs2    = UInt(LogNumLogical.W)
   val rd     = UInt(LogNumLogical.W)
+  val zimm   = UInt(5.W)
   val imm    = SInt(ImmWidth.W)
   val usesRs1 = Bool()
   val usesRs2 = Bool()
@@ -47,6 +48,7 @@ object DecodedInstr {
     d.rs1       := 0.U
     d.rs2       := 0.U
     d.rd        := 0.U
+    d.zimm      := 0.U
     d.imm       := 0.S
     d.usesRs1   := false.B
     d.usesRs2   := false.B
