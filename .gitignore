@@ -17,6 +17,10 @@ build/
 *.fir
 *.anno.json
 
+# Verilator
+sim/obj_dir/
+simx.vcd
+
 # macOS
 .DS_Store
 
