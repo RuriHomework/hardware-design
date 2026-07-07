@@ -78,6 +78,11 @@ class Backend extends Module {
   val instrWritesReg = instr.writesReg && instr.rd =/= 0.U
   val interruptFire = csr.io.interrupt.pending
   val dispatchAccept = dispatchValid && !interruptFire
+  val controlInFlight = RegInit(false.B)
+  val dispatchIsControl = UopKind.isBranch(instr.uop) || UopKind.isSystem(instr.uop)
+  val commitIsControl = UopKind.isBranch(rob.io.commit.bits.uop) || UopKind.isSystem(rob.io.commit.bits.uop)
+  val canDispatch = dispatchAccept && !controlInFlight && rob.io.enqReady && issue.io.enqReady &&
+    (!instrWritesReg || free.io.allocAvail)
 
   // rename 查询
   rmt.io.rs1 := instr.rs1
@@ -85,7 +90,7 @@ class Backend extends Module {
   rmt.io.rd := instr.rd
   rmt.io.writesReg := instrWritesReg
   rmt.io.newPdst := free.io.allocPdst
-  rmt.io.update := dispatchAccept && instrWritesReg && free.io.allocAvail && rob.io.enqReady
+  rmt.io.update := canDispatch && instrWritesReg
   rmt.io.rollback := rob.io.rollback
 
   // ready 查询：用 PhysRegReady（以 pdst 为键）
@@ -95,12 +100,12 @@ class Backend extends Module {
   val rs2ReadyVal = Mux(instr.usesRs2, ready.io.ready2, true.B)
 
   // FreeList 分配
-  free.io.allocReq := dispatchAccept && instrWritesReg && rob.io.enqReady
+  free.io.allocReq := canDispatch && instrWritesReg
   free.io.freeReq  := rob.io.freeReq
   free.io.freePdst := rob.io.freePdst
 
   // ROB 入队
-  rob.io.enq.valid := dispatchAccept && (!instrWritesReg || free.io.allocAvail) && rob.io.enqReady
+  rob.io.enq.valid := canDispatch
   rob.io.enq.bits.uop        := instr.uop
   rob.io.enq.bits.pc         := instr.pc
   rob.io.enq.bits.rd         := instr.rd
@@ -127,6 +132,17 @@ class Backend extends Module {
   issue.io.enq.bits.predTaken  := instr.predTaken
   issue.io.enq.bits.predTarget := instr.predTarget
   issue.io.enq.bits.robIdx     := rob.io.enqIdx
+
+  when(interruptFire) {
+    controlInFlight := false.B
+  }.otherwise {
+    when(rob.io.commit.valid && commitIsControl) {
+      controlInFlight := false.B
+    }
+    when(rob.io.enq.valid && dispatchIsControl) {
+      controlInFlight := true.B
+    }
+  }
 
   // ===== PRF 读口 =====
   prf.io.rs1 := issue.io.prf.rs1
@@ -325,7 +341,7 @@ class Backend extends Module {
 
   // ===== dispatchReady =====
   // ROB 有空 + (不写寄存器 或 FreeList 有空) + IssueQueue 有空
-  io.dispatchReady := !interruptFire && rob.io.enqReady && issue.io.enqReady &&
+  io.dispatchReady := !interruptFire && !controlInFlight && rob.io.enqReady && issue.io.enqReady &&
     (!instrWritesReg || free.io.allocAvail)
 
   // ===== 调试：commit 时的 rd + data =====

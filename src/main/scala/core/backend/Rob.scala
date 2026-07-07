@@ -176,16 +176,24 @@ class Rob extends Module {
     Mux(headEntry.mispred, RedirectCause.MISPRED, RedirectCause.NONE))
 
   // 回滚 rename table：commit 误预测时，把 rd 恢复为 stalePdst
-  io.rollback.valid := canCommit && headEntry.mispred && headEntry.writesReg &&
-    headEntry.rd =/= 0.U
+  io.rollback.valid := canCommit && headEntry.mispred && !UopKind.isJump(headEntry.uop) &&
+    headEntry.writesReg && headEntry.rd =/= 0.U
   io.rollback.bits.lrd  := headEntry.rd
   io.rollback.bits.pdst := headEntry.stalePdst
 
   // flush IssueQueue：发生重定向时
   io.flushIssue := io.redirect.valid
 
-  // 推进 head
-  when(canCommit && !io.flushAll) {
+  val commitRedirect = io.redirect.valid
+
+  // 推进 head。redirect 在 commit 点发生时，丢弃所有年轻项。
+  when(commitRedirect && !io.flushAll) {
+    for (e <- entries) {
+      e.valid := false.B
+      e.done := false.B
+    }
+    head := tail
+  }.elsewhen(canCommit && !io.flushAll) {
     entries(head).valid := false.B
     head  := head + 1.U
   }
@@ -194,7 +202,11 @@ class Rob extends Module {
   val doEnq = io.enq.valid && canEnq
   val delta = Mux(doEnq, 1.S(2.W), 0.S) - Mux(canCommit, 1.S(2.W), 0.S)
   when(!io.flushAll) {
-    count := (count.asSInt + delta).asUInt
+    when(commitRedirect) {
+      count := 0.U
+    }.otherwise {
+      count := (count.asSInt + delta).asUInt
+    }
   }
 
   // 调试

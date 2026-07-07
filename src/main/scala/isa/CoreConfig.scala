@@ -30,8 +30,8 @@ object CoreConfig {
   val RasEntries      = 4
 
   // ===== I/D 内存 =====
-  val IMemDepth       = 4096      // 4K 条指令 = 16 KB
-  val DMemDepth       = 4096      // 4K 字 = 16 KB
+  val IMemDepth       = 16384     // 16K 条指令 = 64 KB
+  val DMemDepth       = 16384     // 16K 字 = 64 KB
 
   // ===== 总线宽度（uop 中立即数、寄存器号携带位） =====
   val ImmWidth        = 32

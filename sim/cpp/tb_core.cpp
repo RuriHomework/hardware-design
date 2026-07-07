@@ -22,8 +22,8 @@ static constexpr uint32_t MMIO_MTIME_LO = 0x20000008;
 static constexpr uint32_t MMIO_MTIME_HI = 0x2000000c;
 static constexpr uint32_t MMIO_MTIMECMP_LO = 0x20000010;
 static constexpr uint32_t MMIO_MTIMECMP_HI = 0x20000014;
-static constexpr size_t IMEM_SIZE = 16 * 1024;
-static constexpr size_t DMEM_SIZE = 16 * 1024;
+static constexpr size_t IMEM_SIZE = 64 * 1024;
+static constexpr size_t DMEM_SIZE = 64 * 1024;
 
 static uint32_t addi(int rd, int rs1, int imm) {
     return ((imm & 0xfff) << 20) | (rs1 << 15) | (0 << 12) | (rd << 7) | OP_IMM;
@@ -210,7 +210,7 @@ int main(int argc, char **argv) {
         dut->io_imem_inst = imem.load32(dut->io_imem_addr);
         dut->io_dmem_rdata = dmem.contains(pendingDmemRead)
             ? dmem.load32(pendingDmemRead)
-            : loadMmio32(pendingDmemRead);
+            : (imem.contains(pendingDmemRead) ? imem.load32(pendingDmemRead) : loadMmio32(pendingDmemRead));
         dut->io_timerInterrupt = mtime >= mtimecmp;
         dut->eval();
 
@@ -242,6 +242,11 @@ int main(int argc, char **argv) {
                 }
             } else if (dmem.contains(daddr)) {
                 dmem.storeMasked32(daddr, dut->io_dmem_wdata, dut->io_dmem_wmask);
+            } else if (imem.contains(daddr)) {
+                std::printf("ERROR: store to read-only IMem addr=0x%08x data=0x%08x mask=0x%x\n",
+                    daddr, dut->io_dmem_wdata, dut->io_dmem_wmask);
+                exitCode = 1;
+                halted = true;
             } else {
                 std::printf("ERROR: store outside DMem addr=0x%08x data=0x%08x mask=0x%x\n",
                     daddr, dut->io_dmem_wdata, dut->io_dmem_wmask);
