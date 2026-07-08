@@ -156,6 +156,53 @@ class CoreSpec extends AnyFlatSpec with ChiselScalatestTester {
     }
   }
 
+  it should "commit JAL with link data and redirect metadata" in {
+    test(new Core) { c =>
+      c.io.timerInterrupt.poke(false.B)
+      val prog = Array[BigInt](
+        jal(1, 8),        // x1 = pc + 4, target pc = 8
+        addi(2, 0, 1),    // should be flushed after the JAL redirect
+        addi(3, 0, 7)
+      )
+
+      c.io.dmem.rdata.poke(0.U)
+      var sawJal = false
+      var commits = scala.collection.mutable.ListBuffer[(Int, BigInt)]()
+
+      for (_ <- 0 until 90) {
+        val addr = c.io.imem.addr.peek().litValue
+        val idx = (addr / 4).toInt
+        val inst = if (idx >= 0 && idx < prog.length) prog(idx) else NOP_LIT
+        c.io.imem.inst.poke(inst.U)
+
+        if (c.io.dbgCommitValid.peek().litToBoolean) {
+          val pc = c.io.dbgCommit.pc.peek().litValue
+          if (pc == 0) {
+            sawJal = true
+            assert(c.io.dbgCommit.taken.peek().litToBoolean,
+              "JAL commit should report taken=true")
+            assert(c.io.dbgCommit.target.peek().litValue == 8,
+              s"JAL target should be 8, got ${c.io.dbgCommit.target.peek().litValue}")
+          }
+          if (c.io.dbgCommitWritesReg.peek().litToBoolean) {
+            commits += ((c.io.dbgCommitRd.peek().litValue.toInt,
+                         c.io.dbgCommitData.peek().litValue))
+          }
+        }
+
+        c.clock.step(1)
+      }
+
+      assert(sawJal, "JAL should commit")
+      assert(commits.find(_._1 == 1).exists(_._2 == 4),
+        s"x1 should receive link pc+4, commits: ${commits}")
+      assert(!commits.exists(_._1 == 2),
+        s"x2 should be flushed by the JAL redirect, commits: ${commits}")
+      assert(commits.find(_._1 == 3).exists(_._2 == 7),
+        s"x3 should execute at the JAL target, commits: ${commits}")
+    }
+  }
+
   it should "trap on ECALL and return with MRET" in {
     test(new Core) { c =>
       c.io.timerInterrupt.poke(false.B)

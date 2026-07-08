@@ -193,12 +193,18 @@ class Backend extends Module {
   // （rmt.rs1Ready 已经综合了 PRF 的 ready 位）
 
   val deq = issue.io.deq
+  val deqIsAlu = deq.valid && Alu.accepts(deq.bits.uop)
   val deqIsLsu = deq.valid && Lsu.accepts(deq.bits.uop)
   val deqIsMdu = deq.valid && MulDiv.accepts(deq.bits.uop)
   val lsuRespDone = lsu.io.busy
   val mduRespDone = mdu.io.done
-  val wbBusy = lsuRespDone || mduRespDone
-  val canIssue = !wbBusy &&
+  val deferredAluValid = RegInit(false.B)
+  val deferredAluCdb = RegInit(0.U.asTypeOf(new CdbEntry))
+  val deferredAluWritesReg = RegInit(false.B)
+  val canBufferAluDuringLsuResp = lsuRespDone && deqIsAlu && !deferredAluValid && !mduRespDone
+  val wbBusy = deferredAluValid || mduRespDone || (lsuRespDone && !canBufferAluDuringLsuResp)
+  val canIssue = !deferredAluValid && !mduRespDone &&
+    (!lsuRespDone || deqIsAlu) &&
     !(deqIsLsu && lsu.io.busy) && !(deqIsMdu && mdu.io.busy)
   issue.io.deqReady := canIssue
   val lsuImmediateDone = deq.valid && canIssue &&
@@ -226,18 +232,30 @@ class Backend extends Module {
   cdb.valid := false.B
   cdb.bits := 0.U.asTypeOf(new CdbEntry)
   val cdbWritesReg = WireDefault(false.B)
+  val wbCause = WireDefault(RedirectCause.NONE)
+  val wbTaken = WireDefault(false.B)
+  val wbTarget = WireDefault(0.U(PcWidth.W))
+  val drainDeferredAlu = deferredAluValid && !lsuDone && !mduDone
   when(aluDone) {
     cdb.valid := true.B
     cdb.bits.pdst := issue.io.deq.bits.pdst
     cdb.bits.data := alu.io.out
     cdb.bits.robIdx := issue.io.deq.bits.robIdx
     cdbWritesReg := UopKind.writesReg(issue.io.deq.bits.uop)
+    when(bruDone) {
+      wbCause := Mux(bru.io.mispred, RedirectCause.MISPRED, RedirectCause.NONE)
+      wbTaken := bru.io.taken
+      wbTarget := bru.io.target
+    }
   }.elsewhen(bruDone) {
     cdb.valid := true.B
     cdb.bits.pdst := issue.io.deq.bits.pdst
     cdb.bits.data := 0.U  // BRU 不写寄存器（JAL 的 rd 由 ALU 写）
     cdb.bits.robIdx := issue.io.deq.bits.robIdx
     cdbWritesReg := false.B
+    wbCause := Mux(bru.io.mispred, RedirectCause.MISPRED, RedirectCause.NONE)
+    wbTaken := bru.io.taken
+    wbTarget := bru.io.target
   }.elsewhen(lsuDone) {
     cdb.valid := true.B
     cdb.bits.pdst := Mux(lsu.io.busy, lsuWbPdst, issue.io.deq.bits.pdst)
@@ -256,6 +274,13 @@ class Backend extends Module {
     cdb.bits.data := csr.io.result
     cdb.bits.robIdx := issue.io.deq.bits.robIdx
     cdbWritesReg := UopKind.writesReg(issue.io.deq.bits.uop)
+    wbCause := csr.io.cause
+    wbTaken := csr.io.redirect
+    wbTarget := csr.io.target
+  }.elsewhen(drainDeferredAlu) {
+    cdb.valid := true.B
+    cdb.bits := deferredAluCdb
+    cdbWritesReg := deferredAluWritesReg
   }
 
   // IssueQueue 监听 CDB
@@ -313,6 +338,7 @@ class Backend extends Module {
   csr.io.cmd.bits.addr := deq.bits.imm.asUInt(11, 0)
   csr.io.cmd.bits.src := Mux(CsrFile.isImm(deq.bits.uop), deq.bits.zimm, deq.bits.a)
   val backendDrainedForInterrupt = rob.io.dbgCount === 0.U && issue.io.dbgCount === 0.U &&
+    !deferredAluValid &&
     !lsu.io.busy && !mdu.io.busy
   val interruptFire = interruptPending && backendDrainedForInterrupt && io.dispatch.valid
   csr.io.interrupt.fire := interruptFire
@@ -321,7 +347,16 @@ class Backend extends Module {
   // 派发逻辑：根据 uop 路由到对应单元
   when(deq.valid && canIssue) {
     when(Alu.accepts(deq.bits.uop)) {
-      aluDone := true.B
+      when(lsuRespDone) {
+        deferredAluValid := true.B
+        deferredAluCdb.robIdx := deq.bits.robIdx
+        deferredAluCdb.pdst := deq.bits.pdst
+        deferredAluCdb.data := alu.io.out
+        deferredAluCdb.exception := false.B
+        deferredAluWritesReg := UopKind.writesReg(deq.bits.uop)
+      }.otherwise {
+        aluDone := true.B
+      }
     }.elsewhen(Bru.accepts(deq.bits.uop)) {
       // JAL/JALR 的 rd 需要写 PC+4，由 ALU 算；这里简化用 BRU 解析重定向
       bruDone := true.B
@@ -345,6 +380,9 @@ class Backend extends Module {
     }.elsewhen(CsrFile.accepts(deq.bits.uop)) {
       csrDone := true.B
     }
+  }
+  when(drainDeferredAlu) {
+    deferredAluValid := false.B
   }
 
   val freeDepth = NumPhysRegs - NumLogicalRegs
@@ -403,15 +441,17 @@ class Backend extends Module {
   rob.io.wb.bits.pdst   := cdb.bits.pdst
   rob.io.wb.bits.data   := cdb.bits.data
   // 分支误预测 + 实际 taken/target（来自 BRU）
-  rob.io.wb.bits.cause  := Mux(bru.io.mispred && bruDone,
-    RedirectCause.MISPRED, csr.io.cause)
-  rob.io.wb.bits.taken  := (bru.io.taken && bruDone) || csr.io.redirect
-  rob.io.wb.bits.target := Mux(csr.io.redirect, csr.io.target, bru.io.target)
+  rob.io.wb.bits.cause  := wbCause
+  rob.io.wb.bits.taken  := wbTaken
+  rob.io.wb.bits.target := wbTarget
 
   // ===== IssueQueue flush =====
   issue.io.flush.valid := rob.io.flushIssue || interruptFire
   issue.io.flush.bits  := rob.io.redirect.bits.robIdx
   rob.io.flushAll := interruptFire
+  when(rob.io.flushIssue || interruptFire) {
+    deferredAluValid := false.B
+  }
 
   // ===== 对外接口 =====
   io.redirect.valid := rob.io.redirect.valid || interruptFire
