@@ -12,6 +12,8 @@ class LsuSpec extends AnyFlatSpec with ChiselScalatestTester {
 
   it should "align store data and masks by effective address" in {
     test(new Lsu) { l =>
+      l.io.forward.valid.poke(false.B)
+      l.io.forward.bits.poke(0.U)
       l.io.cmd.valid.poke(true.B)
       l.io.cmd.bits.uop.poke(SB)
       l.io.cmd.bits.a.poke(0x1000.U)
@@ -35,6 +37,8 @@ class LsuSpec extends AnyFlatSpec with ChiselScalatestTester {
 
   it should "sign and zero extend load data" in {
     test(new Lsu) { l =>
+      l.io.forward.valid.poke(false.B)
+      l.io.forward.bits.poke(0.U)
       l.io.cmd.valid.poke(true.B)
       l.io.cmd.bits.uop.poke(LB)
       l.io.cmd.bits.a.poke(0x1000.U)
@@ -59,6 +63,25 @@ class LsuSpec extends AnyFlatSpec with ChiselScalatestTester {
       l.io.dmem.rdata.poke(0x80010000L.U)
       l.io.done.expect(true.B)
       l.io.result.expect(0x00008001.U)
+    }
+  }
+
+  it should "use forwarded store data for loads" in {
+    test(new Lsu) { l =>
+      l.io.cmd.valid.poke(true.B)
+      l.io.cmd.bits.uop.poke(LB)
+      l.io.cmd.bits.a.poke(0x1000.U)
+      l.io.cmd.bits.b.poke(0.U)
+      l.io.cmd.bits.imm.poke(3.S)
+      l.io.forward.valid.poke(true.B)
+      l.io.forward.bits.poke(0x7f332211.U)
+      l.clock.step()
+
+      l.io.cmd.valid.poke(false.B)
+      l.io.forward.valid.poke(false.B)
+      l.io.dmem.rdata.poke(0xffffffffL.U)
+      l.io.done.expect(true.B)
+      l.io.result.expect(0x7f.U)
     }
   }
 }

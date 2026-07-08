@@ -77,6 +77,10 @@ class Backend extends Module {
     val dbgLsuBusy = Output(Bool())
     val dbgMduBusy = Output(Bool())
     val dbgWbBusy = Output(Bool())
+    val dbgStoreBufferFull = Output(Bool())
+    val dbgStoreCommitWait = Output(Bool())
+    val dbgLoadStoreWait = Output(Bool())
+    val dbgStoreForward = Output(Bool())
   })
 
   // ===== 实例化部件 =====
@@ -86,6 +90,8 @@ class Backend extends Module {
   val rmt   = Module(new RenameTable)
   val issue = Module(new IssueQueue)
   val rob   = Module(new Rob)
+  val storeBuffer = Module(new StoreBuffer)
+  val storeBufferFlush = Wire(Bool())
 
   val alu = Module(new Alu)
   val bru = Module(new Bru)
@@ -112,9 +118,7 @@ class Backend extends Module {
   val commitIsBranch = UopKind.isBranch(rob.io.commit.bits.uop)
   val commitIsSystem = UopKind.isSystem(rob.io.commit.bits.uop)
   val branchCheckpointBusy = branchCheckpointValid && (dispatchIsBranch || dispatchIsSystem)
-  val storeBehindBranchBlocked = branchCheckpointValid && UopKind.isStore(instr.uop)
   val canDispatch = dispatchAccept && !systemInFlight && !branchCheckpointBusy &&
-    !storeBehindBranchBlocked &&
     rob.io.enqReady && issue.io.enqReady &&
     (!instrWritesReg || free.io.allocAvail)
 
@@ -195,7 +199,23 @@ class Backend extends Module {
   val deq = issue.io.deq
   val deqIsAlu = deq.valid && Alu.accepts(deq.bits.uop)
   val deqIsLsu = deq.valid && Lsu.accepts(deq.bits.uop)
+  val deqIsLoad = deq.valid && UopKind.isLoad(deq.bits.uop)
+  val deqIsStore = deq.valid && UopKind.isStore(deq.bits.uop)
+  val deqIsFence = deq.valid && deq.bits.uop === FENCE
   val deqIsMdu = deq.valid && MulDiv.accepts(deq.bits.uop)
+  val deqMemAddr = deq.bits.a + deq.bits.imm.asUInt
+  storeBuffer.io.robHead := rob.io.dbgHead
+  storeBuffer.io.commitRobIdx := rob.io.dbgHead
+  rob.io.commitStoreReady := storeBuffer.io.commitReady
+  val storeCommitFire = rob.io.commit.valid && UopKind.isStore(rob.io.commit.bits.uop)
+  val storeCommitWait = rob.io.dbgCount > 0.U && UopKind.isStore(rob.io.commit.bits.uop) &&
+    !rob.io.commit.valid && !storeBuffer.io.commitReady
+  storeBuffer.io.commitFire := storeCommitFire
+  storeBuffer.io.load.valid := deqIsLoad
+  storeBuffer.io.load.bits.robIdx := deq.bits.robIdx
+  storeBuffer.io.load.bits.addr := deqMemAddr
+  val loadStoreWait = deqIsLoad && storeBuffer.io.loadWait
+  val storeForward = deqIsLoad && storeBuffer.io.loadForward.valid
   val lsuRespDone = lsu.io.busy
   val mduRespDone = mdu.io.done
   val deferredAluValid = RegInit(false.B)
@@ -203,9 +223,16 @@ class Backend extends Module {
   val deferredAluWritesReg = RegInit(false.B)
   val canBufferAluDuringLsuResp = lsuRespDone && deqIsAlu && !deferredAluValid && !mduRespDone
   val wbBusy = deferredAluValid || mduRespDone || (lsuRespDone && !canBufferAluDuringLsuResp)
-  val canIssue = !deferredAluValid && !mduRespDone &&
+  val canIssueBase = !deferredAluValid && !mduRespDone &&
     (!lsuRespDone || deqIsAlu) &&
-    !(deqIsLsu && lsu.io.busy) && !(deqIsMdu && mdu.io.busy)
+    !(deqIsLsu && lsu.io.busy) && !(deqIsMdu && mdu.io.busy) &&
+    !(deqIsStore && !storeBuffer.io.enqReady) &&
+    !(deqIsLoad && loadStoreWait) &&
+    !(deqIsFence && !storeBuffer.io.empty)
+  val canIssue = canIssueBase
+  val loadIssueNeedsDmem = deqIsLoad && canIssueBase && !storeBuffer.io.loadForward.valid
+  val storeDrainFire = storeBuffer.io.drainValid && !loadIssueNeedsDmem && !storeBufferFlush
+  storeBuffer.io.drainFire := storeDrainFire
   issue.io.deqReady := canIssue
   val lsuImmediateDone = deq.valid && canIssue &&
     (UopKind.isStore(deq.bits.uop) || deq.bits.uop === FENCE)
@@ -322,10 +349,16 @@ class Backend extends Module {
   lsu.io.cmd.bits.b   := deq.bits.b
   lsu.io.cmd.bits.imm := deq.bits.imm
   lsu.io.dmem.rdata := io.dmem.rdata
-  io.dmem.addr  := lsu.io.dmem.addr
-  io.dmem.wdata := lsu.io.dmem.wdata
-  io.dmem.wmask := lsu.io.dmem.wmask
-  io.dmem.wen   := lsu.io.dmem.wen
+  lsu.io.forward := storeBuffer.io.loadForward
+  storeBuffer.io.enq.valid := deqIsStore && canIssue
+  storeBuffer.io.enq.bits.robIdx := deq.bits.robIdx
+  storeBuffer.io.enq.bits.addr := lsu.io.dmem.addr
+  storeBuffer.io.enq.bits.wdata := lsu.io.dmem.wdata
+  storeBuffer.io.enq.bits.wmask := lsu.io.dmem.wmask
+  io.dmem.addr  := Mux(storeDrainFire, storeBuffer.io.drain.addr, lsu.io.dmem.addr)
+  io.dmem.wdata := Mux(storeDrainFire, storeBuffer.io.drain.wdata, lsu.io.dmem.wdata)
+  io.dmem.wmask := Mux(storeDrainFire, storeBuffer.io.drain.wmask, lsu.io.dmem.wmask)
+  io.dmem.wen   := storeBuffer.io.drain.wen
 
   mdu.io.cmd.valid := deq.valid && canIssue && MulDiv.accepts(deq.bits.uop)
   mdu.io.cmd.bits.uop := deq.bits.uop
@@ -339,7 +372,7 @@ class Backend extends Module {
   csr.io.cmd.bits.src := Mux(CsrFile.isImm(deq.bits.uop), deq.bits.zimm, deq.bits.a)
   val backendDrainedForInterrupt = rob.io.dbgCount === 0.U && issue.io.dbgCount === 0.U &&
     !deferredAluValid &&
-    !lsu.io.busy && !mdu.io.busy
+    !lsu.io.busy && !mdu.io.busy && storeBuffer.io.empty
   val interruptFire = interruptPending && backendDrainedForInterrupt && io.dispatch.valid
   csr.io.interrupt.fire := interruptFire
   csr.io.interrupt.pc := instr.pc
@@ -449,6 +482,8 @@ class Backend extends Module {
   issue.io.flush.valid := rob.io.flushIssue || interruptFire
   issue.io.flush.bits  := rob.io.redirect.bits.robIdx
   rob.io.flushAll := interruptFire
+  storeBufferFlush := rob.io.flushIssue || interruptFire
+  storeBuffer.io.flush := storeBufferFlush
   when(rob.io.flushIssue || interruptFire) {
     deferredAluValid := false.B
   }
@@ -474,7 +509,6 @@ class Backend extends Module {
   // ===== dispatchReady =====
   // ROB 有空 + (不写寄存器 或 FreeList 有空) + IssueQueue 有空
   io.dispatchReady := !interruptPending && !systemInFlight && !branchCheckpointBusy &&
-    !storeBehindBranchBlocked &&
     rob.io.enqReady && issue.io.enqReady &&
     (!instrWritesReg || free.io.allocAvail)
 
@@ -497,14 +531,13 @@ class Backend extends Module {
   io.dbgDispatchBlockedSystem := dispatchValid && !interruptPending && systemInFlight
   io.dbgDispatchBlockedBranchCheckpoint := dispatchValid && !interruptPending && !systemInFlight &&
     branchCheckpointBusy
-  io.dbgDispatchBlockedStoreBehindBranch := dispatchValid && !interruptPending && !systemInFlight &&
-    !branchCheckpointBusy && storeBehindBranchBlocked
+  io.dbgDispatchBlockedStoreBehindBranch := false.B
   io.dbgDispatchBlockedRobFull := dispatchValid && !interruptPending && !systemInFlight &&
-    !branchCheckpointBusy && !storeBehindBranchBlocked && !rob.io.enqReady
+    !branchCheckpointBusy && !rob.io.enqReady
   io.dbgDispatchBlockedIssueFull := dispatchValid && !interruptPending && !systemInFlight &&
-    !branchCheckpointBusy && !storeBehindBranchBlocked && rob.io.enqReady && !issue.io.enqReady
+    !branchCheckpointBusy && rob.io.enqReady && !issue.io.enqReady
   io.dbgDispatchBlockedFreeList := dispatchValid && !interruptPending && !systemInFlight &&
-    !branchCheckpointBusy && !storeBehindBranchBlocked && rob.io.enqReady && issue.io.enqReady &&
+    !branchCheckpointBusy && rob.io.enqReady && issue.io.enqReady &&
     instrWritesReg && !free.io.allocAvail
   io.dbgIssueDeqValid := deq.valid
   io.dbgIssueDeqReady := issue.io.deqReady
@@ -519,4 +552,8 @@ class Backend extends Module {
   io.dbgLsuBusy := lsu.io.busy
   io.dbgMduBusy := mdu.io.busy
   io.dbgWbBusy := wbBusy
+  io.dbgStoreBufferFull := storeBuffer.io.dbgFull
+  io.dbgStoreCommitWait := storeCommitWait
+  io.dbgLoadStoreWait := loadStoreWait
+  io.dbgStoreForward := storeForward
 }

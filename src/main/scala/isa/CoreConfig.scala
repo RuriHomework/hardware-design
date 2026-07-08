@@ -24,6 +24,10 @@ object CoreConfig {
   val IssueEntries    = 8
   val LogIssueEntries = log2Ceil(IssueEntries)
 
+  // ===== Store Buffer =====
+  val StoreBufferEntries = 8
+  val LogStoreBufferEntries = log2Ceil(StoreBufferEntries)
+
   // ===== 分支预测 =====
   val BtbEntries      = 64
   val BhtEntries      = 256

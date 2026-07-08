@@ -33,6 +33,7 @@ class Lsu extends Module {
       val wen   = Output(Bool())
       val rdata = Input(UInt(XLen.W))
     }
+    val forward = Input(Valid(UInt(XLen.W)))
 
     val result = Output(UInt(XLen.W))
     val done   = Output(Bool())
@@ -43,6 +44,8 @@ class Lsu extends Module {
   val state    = RegInit(sIdle)
   val uopReg   = RegInit(Uop.NOP)
   val byteOffReg = RegInit(0.U(2.W))
+  val forwardValidReg = RegInit(false.B)
+  val forwardDataReg = RegInit(0.U(XLen.W))
 
   // 地址计算
   val addr = io.cmd.bits.a + io.cmd.bits.imm.asUInt
@@ -72,7 +75,7 @@ class Lsu extends Module {
       when(io.cmd.valid) {
         uopReg := io.cmd.bits.uop
         when(UopKind.isStore(io.cmd.bits.uop)) {
-          // store：当周期写，单周期完成。Backend 会阻止未提交分支后的 store 发射。
+          // store：当周期生成地址/数据，Backend 写入 StoreBuffer，提交后再 drain 到 DMem。
           io.dmem.addr := addr
           io.dmem.wen  := true.B
           io.done := true.B
@@ -80,13 +83,15 @@ class Lsu extends Module {
           // load：发地址，下拍收数据
           io.dmem.addr  := addr
           byteOffReg    := byteOff
+          forwardValidReg := io.forward.valid
+          forwardDataReg := io.forward.bits
           state := sResp
         }
       }
     }
     is(sResp) {
       // DMem rdata 已到，按 byteOff 做扩展
-      val rdata = io.dmem.rdata
+      val rdata = Mux(forwardValidReg, forwardDataReg, io.dmem.rdata)
       val off = byteOffReg
       val byteSel = off(1, 0)
       val byteVal = (rdata >> (byteSel << 3))(7, 0)
@@ -101,6 +106,7 @@ class Lsu extends Module {
         is(LW)  { io.result := rdata }
       }
       io.done := true.B
+      forwardValidReg := false.B
       state := sIdle
     }
   }

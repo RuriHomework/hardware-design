@@ -203,6 +203,47 @@ class CoreSpec extends AnyFlatSpec with ChiselScalatestTester {
     }
   }
 
+  it should "flush a younger store after a JAL redirect before it reaches memory" in {
+    test(new Core) { c =>
+      c.io.timerInterrupt.poke(false.B)
+      val prog = Array[BigInt](
+        addi(1, 0, 0x100),
+        addi(2, 0, 99),
+        jal(0, 8),       // redirect to pc=16
+        sw(2, 1, 0),     // younger than the JAL, must be flushed
+        addi(3, 0, 7)
+      )
+
+      c.io.dmem.rdata.poke(0.U)
+      var sawStoreWrite = false
+      var commits = scala.collection.mutable.ListBuffer[(Int, BigInt)]()
+
+      for (_ <- 0 until 120) {
+        val addr = c.io.imem.addr.peek().litValue
+        val idx = (addr / 4).toInt
+        val inst = if (idx >= 0 && idx < prog.length) prog(idx) else NOP_LIT
+        c.io.imem.inst.poke(inst.U)
+
+        if (c.io.dmem.wen.peek().litToBoolean &&
+            ((c.io.dmem.addr.peek().litValue & BigInt("fffffffc", 16)) == 0x100)) {
+          sawStoreWrite = true
+        }
+
+        if (c.io.dbgCommitValid.peek().litToBoolean &&
+            c.io.dbgCommitWritesReg.peek().litToBoolean) {
+          commits += ((c.io.dbgCommitRd.peek().litValue.toInt,
+                       c.io.dbgCommitData.peek().litValue))
+        }
+
+        c.clock.step(1)
+      }
+
+      assert(!sawStoreWrite, "younger store after redirected JAL must not write DMem")
+      assert(commits.find(_._1 == 3).exists(_._2 == 7),
+        s"x3 should execute at the JAL target, commits: ${commits}")
+    }
+  }
+
   it should "trap on ECALL and return with MRET" in {
     test(new Core) { c =>
       c.io.timerInterrupt.poke(false.B)

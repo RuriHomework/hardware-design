@@ -19,6 +19,7 @@ object Elaborate extends App {
     case "Backend"   => () => new core.backend.Backend
     case "Rob"       => () => new core.backend.Rob
     case "IssueQueue"=> () => new core.backend.IssueQueue
+    case "StoreBuffer" => () => new core.backend.StoreBuffer
     case "BranchPredictor" => () => new core.frontend.BranchPredictor
     case other       => throw new IllegalArgumentException(s"Unknown target: $other")
   }

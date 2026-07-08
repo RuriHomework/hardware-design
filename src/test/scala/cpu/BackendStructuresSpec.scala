@@ -124,6 +124,7 @@ class BackendStructuresSpec extends AnyFlatSpec with ChiselScalatestTester {
 
   it should "commit completed ROB entries and raise redirects" in {
     test(new Rob) { r =>
+      r.io.commitStoreReady.poke(true.B)
       r.io.enq.valid.poke(true.B)
       r.io.enq.bits.uop.poke(ADD)
       r.io.enq.bits.pc.poke(0x100.U)
@@ -180,6 +181,174 @@ class BackendStructuresSpec extends AnyFlatSpec with ChiselScalatestTester {
       r.io.redirect.valid.expect(true.B)
       r.io.redirect.bits.target.expect(0x240.U)
       r.io.flushIssue.expect(true.B)
+    }
+  }
+
+  it should "buffer stores until commit and forward full-word stores" in {
+    test(new StoreBuffer) { s =>
+      s.io.robHead.poke(0.U)
+      s.io.flush.poke(false.B)
+      s.io.commitFire.poke(false.B)
+      s.io.drainFire.poke(false.B)
+      s.io.commitRobIdx.poke(0.U)
+      s.io.load.valid.poke(false.B)
+      s.io.enq.valid.poke(true.B)
+      s.io.enq.bits.robIdx.poke(2.U)
+      s.io.enq.bits.addr.poke(0x100.U)
+      s.io.enq.bits.wdata.poke(0x12345678.U)
+      s.io.enq.bits.wmask.poke("b1111".U)
+      s.io.enqReady.expect(true.B)
+      s.clock.step()
+
+      s.io.enq.valid.poke(false.B)
+      s.io.commitRobIdx.poke(2.U)
+      s.io.commitReady.expect(true.B)
+      s.io.drainValid.expect(false.B)
+      s.io.drain.wen.expect(false.B)
+
+      s.io.load.valid.poke(true.B)
+      s.io.load.bits.robIdx.poke(4.U)
+      s.io.load.bits.addr.poke(0x100.U)
+      s.io.loadWait.expect(false.B)
+      s.io.loadForward.valid.expect(true.B)
+      s.io.loadForward.bits.expect(0x12345678.U)
+
+      s.io.load.valid.poke(false.B)
+      s.io.commitFire.poke(true.B)
+      s.clock.step()
+
+      s.io.commitFire.poke(false.B)
+      s.io.drainValid.expect(true.B)
+      s.io.drainFire.poke(true.B)
+      s.io.drain.wen.expect(true.B)
+      s.io.drain.addr.expect(0x100.U)
+      s.io.drain.wdata.expect(0x12345678.U)
+      s.clock.step()
+
+      s.io.drainFire.poke(false.B)
+      s.io.commitReady.expect(false.B)
+      s.io.dbgCount.expect(0.U)
+    }
+  }
+
+  it should "wait loads behind older partial stores and flush buffered stores" in {
+    test(new StoreBuffer) { s =>
+      s.io.robHead.poke(0.U)
+      s.io.flush.poke(false.B)
+      s.io.commitFire.poke(false.B)
+      s.io.drainFire.poke(false.B)
+      s.io.commitRobIdx.poke(0.U)
+      s.io.load.valid.poke(false.B)
+      s.io.enq.valid.poke(true.B)
+      s.io.enq.bits.robIdx.poke(1.U)
+      s.io.enq.bits.addr.poke(0x104.U)
+      s.io.enq.bits.wdata.poke(0xaa.U)
+      s.io.enq.bits.wmask.poke("b0001".U)
+      s.clock.step()
+
+      s.io.enq.valid.poke(false.B)
+      s.io.load.valid.poke(true.B)
+      s.io.load.bits.robIdx.poke(3.U)
+      s.io.load.bits.addr.poke(0x104.U)
+      s.io.loadWait.expect(true.B)
+      s.io.loadForward.valid.expect(false.B)
+
+      s.io.flush.poke(true.B)
+      s.clock.step()
+      s.io.flush.poke(false.B)
+      s.io.loadWait.expect(false.B)
+      s.io.dbgCount.expect(0.U)
+    }
+  }
+
+  it should "mark committed stores and drain them in store age order" in {
+    test(new StoreBuffer) { s =>
+      s.io.robHead.poke(0.U)
+      s.io.flush.poke(false.B)
+      s.io.commitFire.poke(false.B)
+      s.io.drainFire.poke(false.B)
+      s.io.commitRobIdx.poke(0.U)
+      s.io.load.valid.poke(false.B)
+
+      s.io.enq.valid.poke(true.B)
+      s.io.enq.bits.robIdx.poke(1.U)
+      s.io.enq.bits.addr.poke(0x100.U)
+      s.io.enq.bits.wdata.poke(0x11111111.U)
+      s.io.enq.bits.wmask.poke("b1111".U)
+      s.clock.step()
+
+      s.io.enq.bits.robIdx.poke(2.U)
+      s.io.enq.bits.addr.poke(0x104.U)
+      s.io.enq.bits.wdata.poke(0x22222222.U)
+      s.io.enq.bits.wmask.poke("b1111".U)
+      s.clock.step()
+
+      s.io.enq.valid.poke(false.B)
+      s.io.commitFire.poke(true.B)
+      s.io.commitRobIdx.poke(1.U)
+      s.clock.step()
+
+      s.io.commitRobIdx.poke(2.U)
+      s.clock.step()
+
+      s.io.commitFire.poke(false.B)
+      s.io.drainValid.expect(true.B)
+      s.io.drain.addr.expect(0x100.U)
+      s.io.drain.wdata.expect(0x11111111.U)
+      s.io.drainFire.poke(true.B)
+      s.clock.step()
+
+      s.io.drain.addr.expect(0x104.U)
+      s.io.drain.wdata.expect(0x22222222.U)
+      s.clock.step()
+
+      s.io.drainFire.poke(false.B)
+      s.io.drainValid.expect(false.B)
+      s.io.dbgCount.expect(0.U)
+    }
+  }
+
+  it should "preserve committed stores and discard speculative stores on flush" in {
+    test(new StoreBuffer) { s =>
+      s.io.robHead.poke(0.U)
+      s.io.flush.poke(false.B)
+      s.io.commitFire.poke(false.B)
+      s.io.drainFire.poke(false.B)
+      s.io.commitRobIdx.poke(0.U)
+      s.io.load.valid.poke(false.B)
+
+      s.io.enq.valid.poke(true.B)
+      s.io.enq.bits.robIdx.poke(1.U)
+      s.io.enq.bits.addr.poke(0x200.U)
+      s.io.enq.bits.wdata.poke(0xaaaaaaaaL.U)
+      s.io.enq.bits.wmask.poke("b1111".U)
+      s.clock.step()
+
+      s.io.enq.bits.robIdx.poke(2.U)
+      s.io.enq.bits.addr.poke(0x204.U)
+      s.io.enq.bits.wdata.poke(0xbbbbbbbbL.U)
+      s.io.enq.bits.wmask.poke("b1111".U)
+      s.clock.step()
+
+      s.io.enq.valid.poke(false.B)
+      s.io.commitRobIdx.poke(1.U)
+      s.io.commitFire.poke(true.B)
+      s.clock.step()
+
+      s.io.commitFire.poke(false.B)
+      s.io.flush.poke(true.B)
+      s.clock.step()
+
+      s.io.flush.poke(false.B)
+      s.io.dbgCount.expect(1.U)
+      s.io.drainValid.expect(true.B)
+      s.io.drain.addr.expect(0x200.U)
+      s.io.drainFire.poke(true.B)
+      s.clock.step()
+
+      s.io.drainFire.poke(false.B)
+      s.io.drainValid.expect(false.B)
+      s.io.dbgCount.expect(0.U)
     }
   }
 }

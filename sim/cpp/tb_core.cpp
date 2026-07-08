@@ -168,6 +168,10 @@ struct PerfStats {
     uint64_t issuedStores = 0;
     uint64_t issuedBranches = 0;
     uint64_t issuedMdu = 0;
+    uint64_t storeBufferFullCycles = 0;
+    uint64_t storeCommitWaitCycles = 0;
+    uint64_t loadStoreWaitCycles = 0;
+    uint64_t storeForwardCycles = 0;
 
     uint64_t lsuBusyCycles = 0;
     uint64_t mduBusyCycles = 0;
@@ -229,6 +233,11 @@ struct PerfStats {
             static_cast<unsigned long long>(issuedStores),
             static_cast<unsigned long long>(issuedBranches),
             static_cast<unsigned long long>(issuedMdu));
+        std::printf("perf: store_buffer full=%llu commit_wait=%llu load_wait=%llu forwards=%llu\n",
+            static_cast<unsigned long long>(storeBufferFullCycles),
+            static_cast<unsigned long long>(storeCommitWaitCycles),
+            static_cast<unsigned long long>(loadStoreWaitCycles),
+            static_cast<unsigned long long>(storeForwardCycles));
         std::printf("perf: busy lsu=%llu mdu=%llu wb=%llu dmem_stores=%llu mmio_stores=%llu\n",
             static_cast<unsigned long long>(lsuBusyCycles),
             static_cast<unsigned long long>(mduBusyCycles),
@@ -396,6 +405,10 @@ int main(int argc, char **argv) {
             perfStats.lsuBusyCycles += dut->io_dbgLsuBusy ? 1 : 0;
             perfStats.mduBusyCycles += dut->io_dbgMduBusy ? 1 : 0;
             perfStats.wbBusyCycles += dut->io_dbgWbBusy ? 1 : 0;
+            perfStats.storeBufferFullCycles += dut->io_dbgStoreBufferFull ? 1 : 0;
+            perfStats.storeCommitWaitCycles += dut->io_dbgStoreCommitWait ? 1 : 0;
+            perfStats.loadStoreWaitCycles += dut->io_dbgLoadStoreWait ? 1 : 0;
+            perfStats.storeForwardCycles += dut->io_dbgStoreForward ? 1 : 0;
             perfStats.robOccupancySum += dut->io_dbgRobCount;
             perfStats.issueOccupancySum += dut->io_dbgIssueCount;
             perfStats.robOccupancyMax = std::max<uint64_t>(perfStats.robOccupancyMax, dut->io_dbgRobCount);

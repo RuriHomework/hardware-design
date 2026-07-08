@@ -39,6 +39,7 @@ class Rob extends Module {
 
     // 执行结果写回
     val wb = Input(Valid(new WritebackBundle))
+    val commitStoreReady = Input(Bool())
 
     // 提交出口
     val commit = Valid(new Bundle {
@@ -144,7 +145,9 @@ class Rob extends Module {
 
   // 提交：从 head 顺序
   val headEntry = entries(head)
-  val canCommit = count > 0.U && headEntry.valid && headEntry.done
+  val headIsStore = UopKind.isStore(headEntry.uop)
+  val canCommit = count > 0.U && headEntry.valid && headEntry.done &&
+    (!headIsStore || io.commitStoreReady)
 
   io.commit.valid := canCommit
   io.commit.bits.uop        := headEntry.uop

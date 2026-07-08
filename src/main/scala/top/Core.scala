@@ -73,6 +73,10 @@ class Core extends Module {
     val dbgLsuBusy = Output(Bool())
     val dbgMduBusy = Output(Bool())
     val dbgWbBusy = Output(Bool())
+    val dbgStoreBufferFull = Output(Bool())
+    val dbgStoreCommitWait = Output(Bool())
+    val dbgLoadStoreWait = Output(Bool())
+    val dbgStoreForward = Output(Bool())
   })
 
   val bp    = Module(new BranchPredictor)
@@ -150,4 +154,8 @@ class Core extends Module {
   io.dbgLsuBusy := be.io.dbgLsuBusy
   io.dbgMduBusy := be.io.dbgMduBusy
   io.dbgWbBusy := be.io.dbgWbBusy
+  io.dbgStoreBufferFull := be.io.dbgStoreBufferFull
+  io.dbgStoreCommitWait := be.io.dbgStoreCommitWait
+  io.dbgLoadStoreWait := be.io.dbgLoadStoreWait
+  io.dbgStoreForward := be.io.dbgStoreForward
 }
