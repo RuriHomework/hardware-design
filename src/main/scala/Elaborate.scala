@@ -7,8 +7,10 @@ object Elaborate extends App {
     case Some("--top") => args.tail.headOption.getOrElse("Top")
     case _ => "Top"
   }
-  val mod: () => Module = target match {
+  val mod: () => RawModule = target match {
     case "Top"       => () => new top.Top
+    case "BoardTop"  => () => new top.BoardTop
+    case "BlinkTop"  => () => new top.BlinkTop
     case "Core"      => () => new top.Core
     case "Fetch"     => () => new core.frontend.Fetch
     case "Alu"       => () => new core.backend.units.Alu

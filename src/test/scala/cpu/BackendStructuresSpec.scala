@@ -157,7 +157,10 @@ class BackendStructuresSpec extends AnyFlatSpec with ChiselScalatestTester {
       q.io.clearBranchMask.valid.poke(false.B)
       q.io.flushBranchMask.valid.poke(false.B)
       q.io.deqReady.poke(false.B)
+      q.io.robHead.poke(0.U)
       q.io.cdb.valid.poke(false.B)
+      q.io.prf.rs1Data.poke(0.U)
+      q.io.prf.rs2Data.poke(0.U)
 
       q.io.enq.valid.poke(true.B)
       q.io.enq.bits.uop.poke(ADD)
@@ -188,9 +191,18 @@ class BackendStructuresSpec extends AnyFlatSpec with ChiselScalatestTester {
       q.clock.step()
 
       q.io.cdb.valid.poke(false.B)
+      q.io.deq.valid.expect(false.B)
+      q.io.dbgCount.expect(1.U)
+
+      q.io.prf.rs1Data.poke(123.U)
+      q.io.prf.rs2Data.poke(456.U)
+      q.clock.step()
+
       q.io.deq.valid.expect(true.B)
       q.io.deq.bits.robIdx.expect(3.U)
-      q.io.dbgCount.expect(1.U)
+      q.io.deq.bits.a.expect(123.U)
+      q.io.deq.bits.b.expect(456.U)
+      q.io.dbgCount.expect(0.U)
 
       q.io.deqReady.poke(true.B)
       q.clock.step()

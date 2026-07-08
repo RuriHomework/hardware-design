@@ -13,6 +13,9 @@ project/project/
 
 # Generated artifacts
 build/
+.Xil/
+clockInfo.txt
+tight_setup_hold_pins.txt
 *.vcd
 *.fir
 *.anno.json

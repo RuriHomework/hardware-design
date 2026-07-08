@@ -233,6 +233,7 @@ class Backend extends Module {
   // （rmt.rs1Ready 已经综合了 PRF 的 ready 位）
 
   val deq = issue.io.deq
+  issue.io.robHead := rob.io.dbgHead
   val deqIsAlu = deq.valid && Alu.accepts(deq.bits.uop)
   val deqIsLsu = deq.valid && Lsu.accepts(deq.bits.uop)
   val deqIsLoad = deq.valid && UopKind.isLoad(deq.bits.uop)

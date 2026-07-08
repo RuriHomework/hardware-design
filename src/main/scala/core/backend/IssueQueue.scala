@@ -13,7 +13,7 @@ import isa.Uop._
  * 结构：8 项，每项记录 uop + 操作数 pdst + ready 位 + robIdx。
  * 监听 CDB：匹配 pdst 则置 ready + 捕获数据。
  *
- * 发射策略：最老就绪指令优先（oldest-ready-first），简化为扫描第一个就绪项。
+ * 发射策略：扫描最低下标的就绪项，访存/fence 用 ROB 相对顺序额外保序。
  *
  * 单发射：每周期最多发射 1 条 + 接收 1 条 dispatch。
  */
@@ -57,6 +57,7 @@ class IssueQueue extends Module {
       val robIdx = UInt(RobIdWidth.W)
     })
     val deqReady = Input(Bool())
+    val robHead = Input(UInt(RobIdWidth.W))
 
     // PRF 读口
     val prf = new Bundle {
@@ -100,12 +101,11 @@ class IssueQueue extends Module {
     val predTarget = UInt(PcWidth.W)
     val branchMask = UInt(BranchCheckpointEntries.W)
     val robIdx     = UInt(RobIdWidth.W)
-    val age         = UInt(32.W)
   }
 
   val entries = RegInit(VecInit(Seq.fill(IssueEntries)(0.U.asTypeOf(new QEntry))))
-  val count = RegInit(0.U((log2Ceil(IssueEntries) + 1).W))
-  val nextAge = RegInit(0.U(32.W))
+  val deqValidReg = RegInit(false.B)
+  val deqBitsReg = RegInit(0.U.asTypeOf(io.deq.bits))
 
   // CDB 监听：更新所有项的 ready 位
   for (e <- entries) {
@@ -123,7 +123,6 @@ class IssueQueue extends Module {
   // 简化：flush 时全部清空（单发射下足够）
   when(io.flush.valid) {
     for (e <- entries) { e.valid := false.B }
-    count := 0.U
   }.elsewhen(io.flushBranchMask.valid) {
     for (e <- entries) {
       when((e.branchMask & io.flushBranchMask.bits).orR) {
@@ -136,56 +135,39 @@ class IssueQueue extends Module {
     }
   }
 
-  // 找最老的就绪项，避免低下标空洞让年轻 store 越过更老 store。
+  // FPGA-friendly selection: pick the lowest-index ready entry. Memory ordering
+  // is preserved separately with ROB-relative age, avoiding the old all-pairs
+  // 32-bit age comparator network on the critical path.
   val readyMask = entries.map(e => e.valid && e.rs1Ready && e.rs2Ready)
-  val hasReady = count > 0.U && readyMask.reduce(_ || _)
-  val oldestReadyMask = (0 until IssueEntries).map { i =>
-    val olderReady = (0 until IssueEntries).map { j =>
-      readyMask(j) && entries(j).age < entries(i).age
-    }.reduce(_ || _)
-    readyMask(i) && !olderReady
-  }
-  val readyIdx = PriorityEncoder(oldestReadyMask)
+  val hasReady = readyMask.reduce(_ || _)
+  val readyIdx = PriorityEncoder(readyMask)
   val selectedIsMem = hasReady &&
     (UopKind.isMem(entries(readyIdx).uop) || entries(readyIdx).uop === FENCE)
+  val selectedRobDist = entries(readyIdx).robIdx - io.robHead
   val olderMemPending = hasReady && entries.zipWithIndex.map { case (e, i) =>
-    e.valid && i.U =/= readyIdx &&
-      (UopKind.isMem(e.uop) || e.uop === FENCE) &&
-      e.age < entries(readyIdx).age
+      val entryRobDist = e.robIdx - io.robHead
+      e.valid && i.U =/= readyIdx &&
+        (UopKind.isMem(e.uop) || e.uop === FENCE) &&
+        entryRobDist < selectedRobDist
   }.reduce(_ || _)
   val memoryOrderBlocked = selectedIsMem && olderMemPending
 
-  // PRF 读口：连到就绪项
-  io.prf.rs1 := Mux(hasReady, entries(readyIdx).prs1, 0.U)
-  io.prf.rs2 := Mux(hasReady, entries(readyIdx).prs2, 0.U)
+  val canSelect = hasReady && !io.flush.valid &&
+    !io.flushBranchMask.valid && !memoryOrderBlocked && !deqValidReg
 
-  // 发射
-  io.deq.valid := hasReady && count > 0.U && !io.flush.valid && !memoryOrderBlocked
-  when(hasReady && !io.flush.valid) {
-    val e = entries(readyIdx)
-    io.deq.bits.uop        := e.uop
-    io.deq.bits.pc         := e.pc
-    io.deq.bits.rd         := e.rd
-    io.deq.bits.pdst       := e.pdst
-    // 操作数：从 PRF 读，rs1/rs2 ready 时数据有效
-    io.deq.bits.a := Mux(e.usesRs1, io.prf.rs1Data, 0.U)
-    io.deq.bits.b := Mux(e.usesRs2, io.prf.rs2Data, 0.U)
-    io.deq.bits.imm        := e.imm
-    io.deq.bits.zimm       := e.zimm
-    io.deq.bits.usesRs2    := e.usesRs2
-    io.deq.bits.predTaken  := e.predTaken
-    io.deq.bits.predTarget := e.predTarget
-    io.deq.bits.branchMask := e.branchMask
-    io.deq.bits.robIdx     := e.robIdx
-  }.otherwise {
-    io.deq.bits := 0.U.asTypeOf(io.deq.bits)
-  }
+  // PRF 读口：连到即将进入发射缓冲的就绪项。
+  io.prf.rs1 := Mux(canSelect, entries(readyIdx).prs1, 0.U)
+  io.prf.rs2 := Mux(canSelect, entries(readyIdx).prs2, 0.U)
+
+  // 发射出口使用一项寄存器缓冲，切断 Issue 选择/PRF 读到执行/写回的长组合路径。
+  io.deq.valid := deqValidReg
+  io.deq.bits := deqBitsReg
 
   // 入队
   val freeMask = entries.map(e => !e.valid)
   val hasFree = freeMask.reduce(_ || _)
   val enqIdx = PriorityEncoder(freeMask)
-  val canEnq = count < IssueEntries.U && hasFree
+  val canEnq = hasFree
   io.enqReady := canEnq && !io.flush.valid
 
   // enq 时如果 CDB 同周期广播且匹配，直接置 ready
@@ -213,34 +195,44 @@ class IssueQueue extends Module {
     entries(idx).predTarget := io.enq.bits.predTarget
     entries(idx).branchMask := io.enq.bits.branchMask
     entries(idx).robIdx     := io.enq.bits.robIdx
-    entries(idx).age        := nextAge
-    nextAge := nextAge + 1.U
   }
 
-  // 出队后清空
-  val deqFire = io.deq.valid && io.deqReady
-  when(deqFire) {
+  // 把就绪项捕获进发射缓冲，同时从 IssueQueue 删除。
+  when(canSelect) {
+    val e = entries(readyIdx)
+    val rs1Bypass = e.usesRs1 && io.cdb.valid && e.prs1 === io.cdb.bits.pdst
+    val rs2Bypass = e.usesRs2 && io.cdb.valid && e.prs2 === io.cdb.bits.pdst
+    deqValidReg := true.B
+    deqBitsReg.uop        := e.uop
+    deqBitsReg.pc         := e.pc
+    deqBitsReg.rd         := e.rd
+    deqBitsReg.pdst       := e.pdst
+    deqBitsReg.a          := Mux(e.usesRs1, Mux(rs1Bypass, io.cdb.bits.data, io.prf.rs1Data), 0.U)
+    deqBitsReg.b          := Mux(e.usesRs2, Mux(rs2Bypass, io.cdb.bits.data, io.prf.rs2Data), 0.U)
+    deqBitsReg.imm        := e.imm
+    deqBitsReg.zimm       := e.zimm
+    deqBitsReg.usesRs2    := e.usesRs2
+    deqBitsReg.predTaken  := e.predTaken
+    deqBitsReg.predTarget := e.predTarget
+    deqBitsReg.branchMask := e.branchMask
+    deqBitsReg.robIdx     := e.robIdx
     entries(readyIdx).valid := false.B
   }
 
-  // count 同步更新：入队 +1, 出队 -1, flush 清零
-  val doEnqIssue = io.enq.valid && canEnq && !io.flush.valid && !io.flushBranchMask.valid
-  val doDeqIssue = deqFire
+  val deqFire = io.deq.valid && io.deqReady
+  when(deqFire) {
+    deqValidReg := false.B
+  }
   when(io.flush.valid) {
-    count := 0.U
-  }.elsewhen(io.flushBranchMask.valid) {
-    count := PopCount(entries.zipWithIndex.map { case (e, i) =>
-      e.valid &&
-        !(e.branchMask & io.flushBranchMask.bits).orR &&
-        !(doDeqIssue && i.U === readyIdx)
-    })
-  }.otherwise {
-    val deltaI = Mux(doEnqIssue, 1.S(2.W), 0.S) - Mux(doDeqIssue, 1.S(2.W), 0.S)
-    count := (count.asSInt + deltaI).asUInt
+    deqValidReg := false.B
+  }.elsewhen(io.flushBranchMask.valid && (deqBitsReg.branchMask & io.flushBranchMask.bits).orR) {
+    deqValidReg := false.B
+  }.elsewhen(io.clearBranchMask.valid) {
+    deqBitsReg.branchMask := deqBitsReg.branchMask & ~io.clearBranchMask.bits
   }
 
   // 调试
-  io.dbgCount := count
+  io.dbgCount := PopCount(entries.map(_.valid))
   io.dbgHead  := enqIdx
   io.dbgHasReady := hasReady
   io.dbgMemoryOrderBlocked := memoryOrderBlocked
