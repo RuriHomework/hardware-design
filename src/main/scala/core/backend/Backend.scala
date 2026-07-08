@@ -55,6 +55,28 @@ class Backend extends Module {
     val dbgCdbPdst = Output(UInt(LogNumPhys.W))
     val dbgTimerPending = Output(Bool())
     val dbgInterruptFire = Output(Bool())
+    val dbgCommitIsControl = Output(Bool())
+    val dbgCommitIsMret = Output(Bool())
+    val dbgDispatchBlockedInterrupt = Output(Bool())
+    val dbgDispatchBlockedSystem = Output(Bool())
+    val dbgDispatchBlockedBranchCheckpoint = Output(Bool())
+    val dbgDispatchBlockedStoreBehindBranch = Output(Bool())
+    val dbgDispatchBlockedRobFull = Output(Bool())
+    val dbgDispatchBlockedIssueFull = Output(Bool())
+    val dbgDispatchBlockedFreeList = Output(Bool())
+    val dbgIssueDeqValid = Output(Bool())
+    val dbgIssueDeqReady = Output(Bool())
+    val dbgIssueHasReady = Output(Bool())
+    val dbgIssueMemoryOrderBlocked = Output(Bool())
+    val dbgIssueUop = Output(Uop())
+    val dbgIssueIsLoad = Output(Bool())
+    val dbgIssueIsStore = Output(Bool())
+    val dbgIssueIsBranch = Output(Bool())
+    val dbgIssueIsLsu = Output(Bool())
+    val dbgIssueIsMdu = Output(Bool())
+    val dbgLsuBusy = Output(Bool())
+    val dbgMduBusy = Output(Bool())
+    val dbgWbBusy = Output(Bool())
   })
 
   // ===== 实例化部件 =====
@@ -429,4 +451,32 @@ class Backend extends Module {
   io.dbgCdbPdst := cdb.bits.pdst
   io.dbgTimerPending := interruptPending
   io.dbgInterruptFire := interruptFire
+  io.dbgCommitIsControl := UopKind.isBranch(rob.io.commit.bits.uop) || UopKind.isJump(rob.io.commit.bits.uop)
+  io.dbgCommitIsMret := rob.io.commit.bits.uop === MRET
+  io.dbgDispatchBlockedInterrupt := dispatchValid && interruptPending
+  io.dbgDispatchBlockedSystem := dispatchValid && !interruptPending && systemInFlight
+  io.dbgDispatchBlockedBranchCheckpoint := dispatchValid && !interruptPending && !systemInFlight &&
+    branchCheckpointBusy
+  io.dbgDispatchBlockedStoreBehindBranch := dispatchValid && !interruptPending && !systemInFlight &&
+    !branchCheckpointBusy && storeBehindBranchBlocked
+  io.dbgDispatchBlockedRobFull := dispatchValid && !interruptPending && !systemInFlight &&
+    !branchCheckpointBusy && !storeBehindBranchBlocked && !rob.io.enqReady
+  io.dbgDispatchBlockedIssueFull := dispatchValid && !interruptPending && !systemInFlight &&
+    !branchCheckpointBusy && !storeBehindBranchBlocked && rob.io.enqReady && !issue.io.enqReady
+  io.dbgDispatchBlockedFreeList := dispatchValid && !interruptPending && !systemInFlight &&
+    !branchCheckpointBusy && !storeBehindBranchBlocked && rob.io.enqReady && issue.io.enqReady &&
+    instrWritesReg && !free.io.allocAvail
+  io.dbgIssueDeqValid := deq.valid
+  io.dbgIssueDeqReady := issue.io.deqReady
+  io.dbgIssueHasReady := issue.io.dbgHasReady
+  io.dbgIssueMemoryOrderBlocked := issue.io.dbgMemoryOrderBlocked
+  io.dbgIssueUop := deq.bits.uop
+  io.dbgIssueIsLoad := deq.valid && UopKind.isLoad(deq.bits.uop)
+  io.dbgIssueIsStore := deq.valid && UopKind.isStore(deq.bits.uop)
+  io.dbgIssueIsBranch := deq.valid && UopKind.isBranch(deq.bits.uop)
+  io.dbgIssueIsLsu := deqIsLsu
+  io.dbgIssueIsMdu := deqIsMdu
+  io.dbgLsuBusy := lsu.io.busy
+  io.dbgMduBusy := mdu.io.busy
+  io.dbgWbBusy := wbBusy
 }

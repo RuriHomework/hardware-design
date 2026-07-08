@@ -73,6 +73,8 @@ class IssueQueue extends Module {
     // 调试
     val dbgCount = Output(UInt((log2Ceil(IssueEntries) + 1).W))
     val dbgHead  = Output(UInt(log2Ceil(IssueEntries).W))
+    val dbgHasReady = Output(Bool())
+    val dbgMemoryOrderBlocked = Output(Bool())
   })
 
   // 队列项定义
@@ -217,4 +219,6 @@ class IssueQueue extends Module {
   // 调试
   io.dbgCount := count
   io.dbgHead  := enqIdx
+  io.dbgHasReady := hasReady
+  io.dbgMemoryOrderBlocked := memoryOrderBlocked
 }

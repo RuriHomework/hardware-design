@@ -51,6 +51,28 @@ class Core extends Module {
     val dbgCdbPdst = Output(UInt(LogNumPhys.W))
     val dbgTimerPending = Output(Bool())
     val dbgInterruptFire = Output(Bool())
+    val dbgCommitIsControl = Output(Bool())
+    val dbgCommitIsMret = Output(Bool())
+    val dbgDispatchBlockedInterrupt = Output(Bool())
+    val dbgDispatchBlockedSystem = Output(Bool())
+    val dbgDispatchBlockedBranchCheckpoint = Output(Bool())
+    val dbgDispatchBlockedStoreBehindBranch = Output(Bool())
+    val dbgDispatchBlockedRobFull = Output(Bool())
+    val dbgDispatchBlockedIssueFull = Output(Bool())
+    val dbgDispatchBlockedFreeList = Output(Bool())
+    val dbgIssueDeqValid = Output(Bool())
+    val dbgIssueDeqReady = Output(Bool())
+    val dbgIssueHasReady = Output(Bool())
+    val dbgIssueMemoryOrderBlocked = Output(Bool())
+    val dbgIssueUop = Output(Uop())
+    val dbgIssueIsLoad = Output(Bool())
+    val dbgIssueIsStore = Output(Bool())
+    val dbgIssueIsBranch = Output(Bool())
+    val dbgIssueIsLsu = Output(Bool())
+    val dbgIssueIsMdu = Output(Bool())
+    val dbgLsuBusy = Output(Bool())
+    val dbgMduBusy = Output(Bool())
+    val dbgWbBusy = Output(Bool())
   })
 
   val bp    = Module(new BranchPredictor)
@@ -106,4 +128,26 @@ class Core extends Module {
   io.dbgCdbPdst := be.io.dbgCdbPdst
   io.dbgTimerPending := be.io.dbgTimerPending
   io.dbgInterruptFire := be.io.dbgInterruptFire
+  io.dbgCommitIsControl := be.io.dbgCommitIsControl
+  io.dbgCommitIsMret := be.io.dbgCommitIsMret
+  io.dbgDispatchBlockedInterrupt := be.io.dbgDispatchBlockedInterrupt
+  io.dbgDispatchBlockedSystem := be.io.dbgDispatchBlockedSystem
+  io.dbgDispatchBlockedBranchCheckpoint := be.io.dbgDispatchBlockedBranchCheckpoint
+  io.dbgDispatchBlockedStoreBehindBranch := be.io.dbgDispatchBlockedStoreBehindBranch
+  io.dbgDispatchBlockedRobFull := be.io.dbgDispatchBlockedRobFull
+  io.dbgDispatchBlockedIssueFull := be.io.dbgDispatchBlockedIssueFull
+  io.dbgDispatchBlockedFreeList := be.io.dbgDispatchBlockedFreeList
+  io.dbgIssueDeqValid := be.io.dbgIssueDeqValid
+  io.dbgIssueDeqReady := be.io.dbgIssueDeqReady
+  io.dbgIssueHasReady := be.io.dbgIssueHasReady
+  io.dbgIssueMemoryOrderBlocked := be.io.dbgIssueMemoryOrderBlocked
+  io.dbgIssueUop := be.io.dbgIssueUop
+  io.dbgIssueIsLoad := be.io.dbgIssueIsLoad
+  io.dbgIssueIsStore := be.io.dbgIssueIsStore
+  io.dbgIssueIsBranch := be.io.dbgIssueIsBranch
+  io.dbgIssueIsLsu := be.io.dbgIssueIsLsu
+  io.dbgIssueIsMdu := be.io.dbgIssueIsMdu
+  io.dbgLsuBusy := be.io.dbgLsuBusy
+  io.dbgMduBusy := be.io.dbgMduBusy
+  io.dbgWbBusy := be.io.dbgWbBusy
 }
