@@ -86,16 +86,31 @@ class Fetch extends Module {
   val pcReg   = RegInit(0.U(PcWidth.W))
   val predTakenReg = RegInit(false.B)
   val predTargetReg = RegInit(0.U(PcWidth.W))
+  val redirectBubble = RegInit(false.B)
+  val ras = RegInit(VecInit(Seq.fill(RasEntries)(0.U(PcWidth.W))))
+  val rasPtr = RegInit(0.U(log2Ceil(RasEntries + 1).W))
 
   // ===== 译码 =====
   val decoder = Module(new Decoder)
   decoder.io.inst := instReg
   decoder.io.pc   := pcReg
 
-  // 把预测信息塞回 DecodedInstr
+  val rawDecoded = decoder.io.out
+  val isCall = rawDecoded.uop === JAL && (rawDecoded.rd === 1.U || rawDecoded.rd === 5.U)
+  val isRet  = rawDecoded.uop === JALR && (rawDecoded.rs1 === 1.U || rawDecoded.rs1 === 5.U)
+  val jalTarget = (pcReg.asSInt + rawDecoded.imm).asUInt
+  val rasTopIdx = (rasPtr - 1.U)(log2Ceil(RasEntries) - 1, 0)
+  val rasTarget = Mux(rasPtr === 0.U, 0.U, ras(rasTopIdx))
+  val rasCanPredict = isRet && rasPtr =/= 0.U
+  val decodePredTaken = rawDecoded.uop === JAL || rasCanPredict
+  val decodePredTarget = Mux(rawDecoded.uop === JAL, jalTarget, rasTarget)
+  val decodeOverride = decodePredTaken &&
+    (!predTakenReg || predTargetReg =/= decodePredTarget)
+
+  // 把预测信息塞回 DecodedInstr。JAL/ret 在 decode 拍可得到更准目标，提前修正前端。
   val decoded = WireDefault(decoder.io.out)
-  decoded.predTaken  := predTakenReg
-  decoded.predTarget := predTargetReg
+  decoded.predTaken  := Mux(decodePredTaken, true.B, predTakenReg)
+  decoded.predTarget := Mux(decodePredTaken, decodePredTarget, predTargetReg)
 
   // ===== 派发 =====
   // dispatch.valid：当前 instReg 是否为有效指令（寄存器值，无组合环）
@@ -106,12 +121,28 @@ class Fetch extends Module {
   // 流水推进：后端没准备好且本拍有有效指令要派发时 stall
   val stall = dispatchValid && !io.dispatchReady
 
+  val dispatchFire = dispatchValid && !stall
+
   when(redirValid) {
     pc := redirTarget
     pcReg := pc
     predTakenReg := false.B
     predTargetReg := 0.U
     instReg := Instr.NOP
+    redirectBubble := true.B
+  }.elsewhen(dispatchFire && decodeOverride) {
+    pc := decodePredTarget
+    pcReg := pc
+    predTakenReg := false.B
+    predTargetReg := 0.U
+    instReg := Instr.NOP
+    redirectBubble := true.B
+  }.elsewhen(redirectBubble) {
+    pcReg := pc
+    predTakenReg := false.B
+    predTargetReg := 0.U
+    instReg := Instr.NOP
+    redirectBubble := false.B
   }.elsewhen(!stall) {
     pc := nextPc
     pcReg   := pc
@@ -132,23 +163,28 @@ class Fetch extends Module {
 
   // ===== 派发 =====
   io.dispatch.instr := decoded
-  io.dispatch.valid := !stall && instReg =/= Instr.NOP
+  io.dispatch.valid := dispatchValid
 
   // ===== BP 更新（来自 commit 的 retire） =====
   // io.bpUpdate 由 Core 直接传给 BP，Fetch 不再写
 
   // ===== RAS 控制（投机） =====
-  // call: JAL/JALR 且目标指向函数入口（简化：JAL + rd=ra 即 x1，或 rd=x5）
-  // ret: JALR 且 rs1=x1/x5
-  val isCall = decoded.uop === JAL && (decoded.rd === 1.U || decoded.rd === 5.U)
-  val isRet  = decoded.uop === JALR && (decoded.rs1 === 1.U || decoded.rs1 === 5.U)
-  io.bpRasPush := isCall && dispatchValid && !stall
-  io.bpRasPop  := isRet  && dispatchValid && !stall
+  when(dispatchFire) {
+    when(isCall && rasPtr =/= RasEntries.U) {
+      ras(rasPtr(log2Ceil(RasEntries) - 1, 0)) := pcReg + 4.U
+      rasPtr := rasPtr + 1.U
+    }.elsewhen(isRet && rasPtr =/= 0.U) {
+      rasPtr := rasPtr - 1.U
+    }
+  }
+
+  io.bpRasPush := isCall && dispatchFire
+  io.bpRasPop  := isRet  && dispatchFire
   io.bpRasData := pcReg + 4.U
-  io.bpQueryIsCall := isCall
-  io.bpQueryIsRet  := isRet
-  io.bpQueryTarget := Mux(decoded.uop === JAL,
-    (pcReg.asSInt + decoded.imm).asUInt, 0.U)
+  // BP 查询用的是当前取指 PC；这里的 decoded/pcReg 属于上一拍指令，不能参与同周期预测。
+  io.bpQueryIsCall := false.B
+  io.bpQueryIsRet  := false.B
+  io.bpQueryTarget := 0.U
 
   // 调试
   io.dbgPc := pc

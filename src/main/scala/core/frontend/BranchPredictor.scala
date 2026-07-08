@@ -43,15 +43,17 @@ class BranchPredictor extends Module {
     val queryTarget = Input(UInt(PcWidth.W))  // JAL 静态目标（pc+imm），BTB miss 时用
   })
 
-  // ---- BTB：直接映射，tag = PC 高位 ----
-  val btb = SyncReadMem(BtbEntries, new Bundle {
+  class BtbEntry extends Bundle {
     val tag    = UInt((PcWidth - log2Ceil(BtbEntries) - 2).W)
     val target = UInt(PcWidth.W)
     val valid  = Bool()
-  })
-  // BHT 用组合读以让预测在同一周期完成
-  val bht = Mem(BhtEntries, UInt(2.W))
-  val btbRead = btb.read(io.query.pc(log2Ceil(BtbEntries) + 1, 2))
+  }
+
+  // ---- BTB：直接映射，tag = PC 高位 ----
+  val btb = RegInit(VecInit(Seq.fill(BtbEntries)(0.U.asTypeOf(new BtbEntry))))
+  // BHT 用寄存器组合读以让预测在同一周期完成。
+  val bht = RegInit(VecInit(Seq.fill(BhtEntries)(1.U(2.W))))
+  val btbRead = btb(io.query.pc(log2Ceil(BtbEntries) + 1, 2))
 
   // ---- RAS ----
   val ras = RegInit(VecInit(Seq.fill(RasEntries)(0.U(PcWidth.W))))
@@ -66,29 +68,21 @@ class BranchPredictor extends Module {
   // RAS 预测返回地址
   val rasTop = ras(rasPtr - 1.U)
 
-  // 综合
+  // 综合。当前 Fetch 只能同周期提供 PC，指令类型来自后一拍译码，因此默认只用
+  // 以 PC 索引的 BTB/BHT 预测；RAS 通道保留给独立测试和后续前端重构。
   val predTaken  = WireDefault(false.B)
   val predTarget = WireDefault(io.query.pc + 4.U)
 
-  // 条件分支：用 BHT
+  // 控制流统一使用 BHT 方向 + BTB 目标。JAL/JALR 在 commit 后也会训练为 taken。
   predTaken := bhtTaken && btbHit  // 简化：BTB hit 才用 BHT 结果
-  predTarget := btbRead.target
+  predTarget := Mux(btbHit, btbRead.target, io.query.pc + 4.U)
 
-  // JAL：必然 taken，目标优先用 BTB，miss 用静态
-  when(io.queryIsCall || (btbHit && io.queryIsRet)) {
-    // 暂不在此处覆盖；下方覆盖
-  }
-  when(io.queryTarget =/= 0.U && !io.queryIsRet) {
-    // JAL：静态目标可信
-    predTaken  := true.B
-    predTarget := io.queryTarget
-  }
   // ret：用 RAS
   when(io.queryIsRet) {
     predTaken  := rasPtr =/= 0.U
     predTarget := rasTop
   }
-  // call：目标用 BTB 或静态，同时压栈在 query 阶段不改变 taken
+  // call：只有调用方明确说明当前 query PC 是 call 时才用静态目标。
   when(io.queryIsCall) {
     predTaken  := true.B
     predTarget := Mux(btbHit, btbRead.target, io.queryTarget)
@@ -99,25 +93,25 @@ class BranchPredictor extends Module {
 
   // ---- 更新逻辑（commit 时） ----
   when(io.updateValid) {
+    val updateIsControl = UopKind.isBranch(io.update.uop) || UopKind.isJump(io.update.uop)
+
     // BHT 更新：2 位饱和
     val idx = io.update.pc(log2Ceil(BhtEntries) + 1, 2)
     val old = bht(idx)
     val next = Mux(io.update.taken,
       Mux(old === 3.U, 3.U, old + 1.U),
       Mux(old === 0.U, 0.U, old - 1.U))
-    bht(idx) := next
+    when(updateIsControl) {
+      bht(idx) := next
+    }
 
     // BTB 更新：taken 的分支/JAL/JALR 写入目标
-    when(io.update.taken || io.update.isCall || io.update.isRet) {
-      val entry = Wire(new Bundle {
-        val tag    = UInt((PcWidth - log2Ceil(BtbEntries) - 2).W)
-        val target = UInt(PcWidth.W)
-        val valid  = Bool()
-      })
+    when(updateIsControl && io.update.taken) {
+      val entry = Wire(new BtbEntry)
       entry.tag    := io.update.pc(PcWidth - 1, log2Ceil(BtbEntries) + 2)
       entry.target := io.update.target
       entry.valid  := true.B
-      btb.write(io.update.pc(log2Ceil(BtbEntries) + 1, 2), entry)
+      btb(io.update.pc(log2Ceil(BtbEntries) + 1, 2)) := entry
     }
   }
 

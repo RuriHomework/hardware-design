@@ -90,7 +90,9 @@ class Backend extends Module {
   val commitIsBranch = UopKind.isBranch(rob.io.commit.bits.uop)
   val commitIsSystem = UopKind.isSystem(rob.io.commit.bits.uop)
   val branchCheckpointBusy = branchCheckpointValid && (dispatchIsBranch || dispatchIsSystem)
+  val storeBehindBranchBlocked = branchCheckpointValid && UopKind.isStore(instr.uop)
   val canDispatch = dispatchAccept && !systemInFlight && !branchCheckpointBusy &&
+    !storeBehindBranchBlocked &&
     rob.io.enqReady && issue.io.enqReady &&
     (!instrWritesReg || free.io.allocAvail)
 
@@ -174,7 +176,8 @@ class Backend extends Module {
   val lsuRespDone = lsu.io.busy
   val mduRespDone = mdu.io.done
   val wbBusy = lsuRespDone || mduRespDone
-  val canIssue = !wbBusy && !(deqIsLsu && lsu.io.busy) && !(deqIsMdu && mdu.io.busy)
+  val canIssue = !wbBusy &&
+    !(deqIsLsu && lsu.io.busy) && !(deqIsMdu && mdu.io.busy)
   issue.io.deqReady := canIssue
   val lsuImmediateDone = deq.valid && canIssue &&
     (UopKind.isStore(deq.bits.uop) || deq.bits.uop === FENCE)
@@ -289,7 +292,7 @@ class Backend extends Module {
   csr.io.cmd.bits.src := Mux(CsrFile.isImm(deq.bits.uop), deq.bits.zimm, deq.bits.a)
   val backendDrainedForInterrupt = rob.io.dbgCount === 0.U && issue.io.dbgCount === 0.U &&
     !lsu.io.busy && !mdu.io.busy
-  val interruptFire = interruptPending && backendDrainedForInterrupt
+  val interruptFire = interruptPending && backendDrainedForInterrupt && io.dispatch.valid
   csr.io.interrupt.fire := interruptFire
   csr.io.interrupt.pc := instr.pc
 
@@ -409,6 +412,7 @@ class Backend extends Module {
   // ===== dispatchReady =====
   // ROB 有空 + (不写寄存器 或 FreeList 有空) + IssueQueue 有空
   io.dispatchReady := !interruptPending && !systemInFlight && !branchCheckpointBusy &&
+    !storeBehindBranchBlocked &&
     rob.io.enqReady && issue.io.enqReady &&
     (!instrWritesReg || free.io.allocAvail)
 

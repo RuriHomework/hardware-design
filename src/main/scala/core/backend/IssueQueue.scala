@@ -129,13 +129,21 @@ class IssueQueue extends Module {
     readyMask(i) && !olderReady
   }
   val readyIdx = PriorityEncoder(oldestReadyMask)
+  val selectedIsMem = hasReady &&
+    (UopKind.isMem(entries(readyIdx).uop) || entries(readyIdx).uop === FENCE)
+  val olderMemPending = hasReady && entries.zipWithIndex.map { case (e, i) =>
+    e.valid && i.U =/= readyIdx &&
+      (UopKind.isMem(e.uop) || e.uop === FENCE) &&
+      e.age < entries(readyIdx).age
+  }.reduce(_ || _)
+  val memoryOrderBlocked = selectedIsMem && olderMemPending
 
   // PRF 读口：连到就绪项
   io.prf.rs1 := Mux(hasReady, entries(readyIdx).prs1, 0.U)
   io.prf.rs2 := Mux(hasReady, entries(readyIdx).prs2, 0.U)
 
   // 发射
-  io.deq.valid := hasReady && count > 0.U && !io.flush.valid
+  io.deq.valid := hasReady && count > 0.U && !io.flush.valid && !memoryOrderBlocked
   when(hasReady && !io.flush.valid) {
     val e = entries(readyIdx)
     io.deq.bits.uop        := e.uop
@@ -191,7 +199,7 @@ class IssueQueue extends Module {
   }
 
   // 出队后清空
-  val deqFire = hasReady && io.deqReady && !io.flush.valid
+  val deqFire = io.deq.valid && io.deqReady
   when(deqFire) {
     entries(readyIdx).valid := false.B
   }

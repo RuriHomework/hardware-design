@@ -72,7 +72,7 @@ class Lsu extends Module {
       when(io.cmd.valid) {
         uopReg := io.cmd.bits.uop
         when(UopKind.isStore(io.cmd.bits.uop)) {
-          // store：当周期写，单周期完成
+          // store：当周期写，单周期完成。Backend 会阻止未提交分支后的 store 发射。
           io.dmem.addr := addr
           io.dmem.wen  := true.B
           io.done := true.B

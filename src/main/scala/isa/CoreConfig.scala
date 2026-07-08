@@ -25,9 +25,9 @@ object CoreConfig {
   val LogIssueEntries = log2Ceil(IssueEntries)
 
   // ===== 分支预测 =====
-  val BtbEntries      = 16
-  val BhtEntries      = 64
-  val RasEntries      = 4
+  val BtbEntries      = 64
+  val BhtEntries      = 256
+  val RasEntries      = 16
 
   // ===== I/D 内存 =====
   val IMemDepth       = 16384     // 16K 条指令 = 64 KB
