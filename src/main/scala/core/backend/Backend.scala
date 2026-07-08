@@ -92,6 +92,14 @@ class Backend extends Module {
   val rob   = Module(new Rob)
   val storeBuffer = Module(new StoreBuffer)
   val storeBufferFlush = Wire(Bool())
+  val earlyRedirect = Wire(Valid(new Redirect))
+  val earlyRedirectBranchMask = Wire(UInt(BranchCheckpointEntries.W))
+  val clearResolvedBranchMask = Wire(Valid(UInt(BranchCheckpointEntries.W)))
+  earlyRedirect.valid := false.B
+  earlyRedirect.bits := 0.U.asTypeOf(new Redirect)
+  earlyRedirectBranchMask := 0.U
+  clearResolvedBranchMask.valid := false.B
+  clearResolvedBranchMask.bits := 0.U
 
   val alu = Module(new Alu)
   val bru = Module(new Bru)
@@ -107,20 +115,43 @@ class Backend extends Module {
   val interruptPending = csr.io.interrupt.pending
   val dispatchAccept = dispatchValid && !interruptPending
   val systemInFlight = RegInit(false.B)
-  val branchCheckpointValid = RegInit(false.B)
-  val branchCheckpointRmt = Reg(Vec(NumLogicalRegs, UInt(LogNumPhys.W)))
-  val branchCheckpointFreeList = Reg(Vec(NumPhysRegs - NumLogicalRegs, UInt(LogNumPhys.W)))
-  val branchCheckpointFreeHead = Reg(UInt(log2Ceil(NumPhysRegs - NumLogicalRegs).W))
-  val branchCheckpointFreeTail = Reg(UInt(log2Ceil(NumPhysRegs - NumLogicalRegs).W))
-  val branchCheckpointFreeCount = Reg(UInt(log2Ceil(NumPhysRegs - NumLogicalRegs + 1).W))
+  val activeBranchMask = RegInit(0.U(BranchCheckpointEntries.W))
+  val branchCheckpointValid = RegInit(VecInit(Seq.fill(BranchCheckpointEntries)(false.B)))
+  val branchCheckpointRobIdx = Reg(Vec(BranchCheckpointEntries, UInt(RobIdWidth.W)))
+  val branchCheckpointRmt = Reg(Vec(BranchCheckpointEntries, Vec(NumLogicalRegs, UInt(LogNumPhys.W))))
+  val branchCheckpointFreeList = Reg(Vec(BranchCheckpointEntries, Vec(NumPhysRegs - NumLogicalRegs, UInt(LogNumPhys.W))))
+  val branchCheckpointFreeHead = Reg(Vec(BranchCheckpointEntries, UInt(log2Ceil(NumPhysRegs - NumLogicalRegs).W)))
+  val branchCheckpointFreeTail = Reg(Vec(BranchCheckpointEntries, UInt(log2Ceil(NumPhysRegs - NumLogicalRegs).W)))
+  val branchCheckpointFreeCount = Reg(Vec(BranchCheckpointEntries, UInt(log2Ceil(NumPhysRegs - NumLogicalRegs + 1).W)))
+  val branchCheckpointValidMask = branchCheckpointValid.asUInt
+  val branchCheckpointAnyValid = branchCheckpointValid.reduce(_ || _)
+  val branchCheckpointFreeMask = branchCheckpointValid.map(v => !v)
+  val branchCheckpointHasFree = branchCheckpointFreeMask.reduce(_ || _)
+  val branchCheckpointAllocIdx = PriorityEncoder(branchCheckpointFreeMask)
   val dispatchIsBranch = UopKind.isBranch(instr.uop)
   val dispatchIsSystem = UopKind.isSystem(instr.uop)
   val commitIsBranch = UopKind.isBranch(rob.io.commit.bits.uop)
   val commitIsSystem = UopKind.isSystem(rob.io.commit.bits.uop)
-  val branchCheckpointBusy = branchCheckpointValid && (dispatchIsBranch || dispatchIsSystem)
-  val canDispatch = dispatchAccept && !systemInFlight && !branchCheckpointBusy &&
+  val branchCheckpointBusy =
+    (dispatchIsBranch && !branchCheckpointHasFree) ||
+    (dispatchIsSystem && branchCheckpointAnyValid)
+  val restoreRobIdx = Mux(earlyRedirect.valid, earlyRedirect.bits.robIdx, rob.io.redirect.bits.robIdx)
+  val branchCheckpointRestoreMatches = (0 until BranchCheckpointEntries).map { i =>
+    branchCheckpointValid(i) && branchCheckpointRobIdx(i) === restoreRobIdx
+  }
+  val branchCheckpointRestoreHit = branchCheckpointRestoreMatches.reduce(_ || _)
+  val branchCheckpointRestoreIdx = PriorityEncoder(branchCheckpointRestoreMatches)
+  val branchCheckpointCommitMatches = (0 until BranchCheckpointEntries).map { i =>
+    branchCheckpointValid(i) && branchCheckpointRobIdx(i) === rob.io.dbgHead
+  }
+  val branchCheckpointCommitHit = branchCheckpointCommitMatches.reduce(_ || _)
+  val branchCheckpointCommitIdx = PriorityEncoder(branchCheckpointCommitMatches)
+  val redirectThisCycle = earlyRedirect.valid || rob.io.redirect.valid
+  val canDispatch = dispatchAccept && !redirectThisCycle && !systemInFlight && !branchCheckpointBusy &&
     rob.io.enqReady && issue.io.enqReady &&
     (!instrWritesReg || free.io.allocAvail)
+  val dispatchBranchMask = activeBranchMask & ~clearResolvedBranchMask.bits
+  val dispatchBranchAllocBit = UIntToOH(branchCheckpointAllocIdx, BranchCheckpointEntries)
 
   // rename 查询
   rmt.io.rs1 := instr.rs1
@@ -130,10 +161,12 @@ class Backend extends Module {
   rmt.io.newPdst := free.io.allocPdst
   rmt.io.update := canDispatch && instrWritesReg
   rmt.io.rollback := rob.io.rollback
-  val restoreBranchCheckpoint = rob.io.redirect.valid &&
-    rob.io.redirect.bits.cause === RedirectCause.MISPRED && branchCheckpointValid
+  val restoreBranchCheckpoint =
+    ((earlyRedirect.valid && earlyRedirect.bits.cause === RedirectCause.MISPRED) ||
+      (rob.io.redirect.valid && rob.io.redirect.bits.cause === RedirectCause.MISPRED)) &&
+      branchCheckpointRestoreHit
   rmt.io.restore.valid := restoreBranchCheckpoint
-  rmt.io.restore.bits := branchCheckpointRmt
+  rmt.io.restore.bits := branchCheckpointRmt(branchCheckpointRestoreIdx)
 
   // ready 查询：用 PhysRegReady（以 pdst 为键）
   ready.io.query1 := rmt.io.rs1Pdst
@@ -147,16 +180,17 @@ class Backend extends Module {
   free.io.freePdst := rob.io.freePdst
   free.io.restore.valid := restoreBranchCheckpoint
   val restoredFreeList = Wire(Vec(NumPhysRegs - NumLogicalRegs, UInt(LogNumPhys.W)))
-  restoredFreeList := branchCheckpointFreeList
-  val restoredFreeTailAfterCommit = Mux(branchCheckpointFreeTail === ((NumPhysRegs - NumLogicalRegs) - 1).U,
-    0.U, branchCheckpointFreeTail + 1.U)
+  restoredFreeList := branchCheckpointFreeList(branchCheckpointRestoreIdx)
+  val restoredFreeTail = branchCheckpointFreeTail(branchCheckpointRestoreIdx)
+  val restoredFreeTailAfterCommit = Mux(restoredFreeTail === ((NumPhysRegs - NumLogicalRegs) - 1).U,
+    0.U, restoredFreeTail + 1.U)
   when(rob.io.freeReq) {
-    restoredFreeList(branchCheckpointFreeTail) := rob.io.freePdst
+    restoredFreeList(restoredFreeTail) := rob.io.freePdst
   }
   free.io.restore.bits.freeList := restoredFreeList
-  free.io.restore.bits.head := branchCheckpointFreeHead
-  free.io.restore.bits.tail := Mux(rob.io.freeReq, restoredFreeTailAfterCommit, branchCheckpointFreeTail)
-  free.io.restore.bits.count := branchCheckpointFreeCount + Mux(rob.io.freeReq, 1.U, 0.U)
+  free.io.restore.bits.head := branchCheckpointFreeHead(branchCheckpointRestoreIdx)
+  free.io.restore.bits.tail := Mux(rob.io.freeReq, restoredFreeTailAfterCommit, restoredFreeTail)
+  free.io.restore.bits.count := branchCheckpointFreeCount(branchCheckpointRestoreIdx) + Mux(rob.io.freeReq, 1.U, 0.U)
 
   // ROB 入队
   rob.io.enq.valid := canDispatch
@@ -168,6 +202,7 @@ class Backend extends Module {
   rob.io.enq.bits.writesReg  := instrWritesReg
   rob.io.enq.bits.predTaken  := instr.predTaken
   rob.io.enq.bits.predTarget := instr.predTarget
+  rob.io.enq.bits.branchMask  := dispatchBranchMask
 
   // IssueQueue 入队
   issue.io.enq.valid := rob.io.enq.valid  // 同步：rob 能收，issue 也能收
@@ -185,6 +220,7 @@ class Backend extends Module {
   issue.io.enq.bits.usesRs2    := instr.usesRs2
   issue.io.enq.bits.predTaken  := instr.predTaken
   issue.io.enq.bits.predTarget := instr.predTarget
+  issue.io.enq.bits.branchMask := dispatchBranchMask
   issue.io.enq.bits.robIdx     := rob.io.enqIdx
 
   // ===== PRF 读口 =====
@@ -221,6 +257,7 @@ class Backend extends Module {
   val deferredAluValid = RegInit(false.B)
   val deferredAluCdb = RegInit(0.U.asTypeOf(new CdbEntry))
   val deferredAluWritesReg = RegInit(false.B)
+  val deferredAluBranchMask = RegInit(0.U(BranchCheckpointEntries.W))
   val canBufferAluDuringLsuResp = lsuRespDone && deqIsAlu && !deferredAluValid && !mduRespDone
   val wbBusy = deferredAluValid || mduRespDone || (lsuRespDone && !canBufferAluDuringLsuResp)
   val canIssueBase = !deferredAluValid && !mduRespDone &&
@@ -245,15 +282,47 @@ class Backend extends Module {
   val lsuDone = WireDefault(false.B)
   val mduDone = WireDefault(false.B)
   val csrDone = WireDefault(false.B)
+  val branchResolveMatches = (0 until BranchCheckpointEntries).map { i =>
+    branchCheckpointValid(i) && branchCheckpointRobIdx(i) === deq.bits.robIdx
+  }
+  val branchResolveHit = branchResolveMatches.reduce(_ || _)
+  val branchResolveIdx = PriorityEncoder(branchResolveMatches)
+  val branchResolveBit = UIntToOH(branchResolveIdx, BranchCheckpointEntries)
+  val earlyBranchMispred = bruDone && bru.io.mispred && branchResolveHit
+  val earlyBranchCorrect = bruDone && !bru.io.mispred && branchResolveHit
   val lsuWbRobIdx = RegInit(0.U(RobIdWidth.W))
   val lsuWbPdst = RegInit(0.U(LogNumPhys.W))
   val lsuWbUop = RegInit(Uop.NOP)
+  val lsuWbBranchMask = RegInit(0.U(BranchCheckpointEntries.W))
+  val lsuWbKilled = RegInit(false.B)
   val mduWbRobIdx = RegInit(0.U(RobIdWidth.W))
   val mduWbPdst = RegInit(0.U(LogNumPhys.W))
   val mduWbUop = RegInit(Uop.NOP)
+  val mduWbBranchMask = RegInit(0.U(BranchCheckpointEntries.W))
+  val mduWbKilled = RegInit(false.B)
 
-  lsuDone := lsuRespDone || lsuImmediateDone
-  mduDone := mdu.io.done
+  val deferredAluFlushNow = earlyRedirect.valid && (deferredAluBranchMask & branchResolveBit).orR
+  val lsuWbFlushNow = earlyRedirect.valid && (lsuWbBranchMask & branchResolveBit).orR
+  val mduWbFlushNow = earlyRedirect.valid && (mduWbBranchMask & branchResolveBit).orR
+  when(earlyRedirect.valid) {
+    when(deferredAluFlushNow) {
+      deferredAluValid := false.B
+    }
+    when(lsuWbFlushNow) {
+      lsuWbKilled := true.B
+    }
+    when(mduWbFlushNow) {
+      mduWbKilled := true.B
+    }
+  }
+  when(clearResolvedBranchMask.valid) {
+    deferredAluBranchMask := deferredAluBranchMask & ~clearResolvedBranchMask.bits
+    lsuWbBranchMask := lsuWbBranchMask & ~clearResolvedBranchMask.bits
+    mduWbBranchMask := mduWbBranchMask & ~clearResolvedBranchMask.bits
+  }
+
+  lsuDone := (lsuRespDone && !lsuWbKilled && !lsuWbFlushNow) || lsuImmediateDone
+  mduDone := mdu.io.done && !mduWbKilled && !mduWbFlushNow
 
   // 仲裁：ALU > BRU > LSU > MulDiv > CSR
   cdb.valid := false.B
@@ -262,7 +331,8 @@ class Backend extends Module {
   val wbCause = WireDefault(RedirectCause.NONE)
   val wbTaken = WireDefault(false.B)
   val wbTarget = WireDefault(0.U(PcWidth.W))
-  val drainDeferredAlu = deferredAluValid && !lsuDone && !mduDone
+  val wbRedirectHandled = WireDefault(false.B)
+  val drainDeferredAlu = deferredAluValid && !deferredAluFlushNow && !lsuDone && !mduDone
   when(aluDone) {
     cdb.valid := true.B
     cdb.bits.pdst := issue.io.deq.bits.pdst
@@ -273,6 +343,7 @@ class Backend extends Module {
       wbCause := Mux(bru.io.mispred, RedirectCause.MISPRED, RedirectCause.NONE)
       wbTaken := bru.io.taken
       wbTarget := bru.io.target
+      wbRedirectHandled := earlyBranchMispred
     }
   }.elsewhen(bruDone) {
     cdb.valid := true.B
@@ -283,6 +354,7 @@ class Backend extends Module {
     wbCause := Mux(bru.io.mispred, RedirectCause.MISPRED, RedirectCause.NONE)
     wbTaken := bru.io.taken
     wbTarget := bru.io.target
+    wbRedirectHandled := earlyBranchMispred
   }.elsewhen(lsuDone) {
     cdb.valid := true.B
     cdb.bits.pdst := Mux(lsu.io.busy, lsuWbPdst, issue.io.deq.bits.pdst)
@@ -355,6 +427,7 @@ class Backend extends Module {
   storeBuffer.io.enq.bits.addr := lsu.io.dmem.addr
   storeBuffer.io.enq.bits.wdata := lsu.io.dmem.wdata
   storeBuffer.io.enq.bits.wmask := lsu.io.dmem.wmask
+  storeBuffer.io.enq.bits.branchMask := deq.bits.branchMask
   io.dmem.addr  := Mux(storeDrainFire, storeBuffer.io.drain.addr, lsu.io.dmem.addr)
   io.dmem.wdata := Mux(storeDrainFire, storeBuffer.io.drain.wdata, lsu.io.dmem.wdata)
   io.dmem.wmask := Mux(storeDrainFire, storeBuffer.io.drain.wmask, lsu.io.dmem.wmask)
@@ -370,7 +443,7 @@ class Backend extends Module {
   csr.io.cmd.bits.pc := deq.bits.pc
   csr.io.cmd.bits.addr := deq.bits.imm.asUInt(11, 0)
   csr.io.cmd.bits.src := Mux(CsrFile.isImm(deq.bits.uop), deq.bits.zimm, deq.bits.a)
-  val backendDrainedForInterrupt = rob.io.dbgCount === 0.U && issue.io.dbgCount === 0.U &&
+  val backendDrainedForInterrupt = rob.io.empty && issue.io.dbgCount === 0.U &&
     !deferredAluValid &&
     !lsu.io.busy && !mdu.io.busy && storeBuffer.io.empty
   val interruptFire = interruptPending && backendDrainedForInterrupt && io.dispatch.valid
@@ -387,6 +460,7 @@ class Backend extends Module {
         deferredAluCdb.data := alu.io.out
         deferredAluCdb.exception := false.B
         deferredAluWritesReg := UopKind.writesReg(deq.bits.uop)
+        deferredAluBranchMask := deq.bits.branchMask
       }.otherwise {
         aluDone := true.B
       }
@@ -406,10 +480,14 @@ class Backend extends Module {
       lsuWbRobIdx := deq.bits.robIdx
       lsuWbPdst := deq.bits.pdst
       lsuWbUop := deq.bits.uop
+      lsuWbBranchMask := deq.bits.branchMask
+      lsuWbKilled := false.B
     }.elsewhen(MulDiv.accepts(deq.bits.uop)) {
       mduWbRobIdx := deq.bits.robIdx
       mduWbPdst := deq.bits.pdst
       mduWbUop := deq.bits.uop
+      mduWbBranchMask := deq.bits.branchMask
+      mduWbKilled := false.B
     }.elsewhen(CsrFile.accepts(deq.bits.uop)) {
       csrDone := true.B
     }
@@ -417,6 +495,20 @@ class Backend extends Module {
   when(drainDeferredAlu) {
     deferredAluValid := false.B
   }
+  when(lsuRespDone) {
+    lsuWbKilled := false.B
+  }
+  when(mdu.io.done) {
+    mduWbKilled := false.B
+  }
+
+  earlyRedirect.valid := earlyBranchMispred
+  earlyRedirect.bits.target := Mux(bru.io.taken, bru.io.target, deq.bits.pc + 4.U)
+  earlyRedirect.bits.robIdx := deq.bits.robIdx
+  earlyRedirect.bits.cause := RedirectCause.MISPRED
+  earlyRedirectBranchMask := deq.bits.branchMask
+  clearResolvedBranchMask.valid := earlyBranchCorrect
+  clearResolvedBranchMask.bits := Mux(earlyBranchCorrect, branchResolveBit, 0.U)
 
   val freeDepth = NumPhysRegs - NumLogicalRegs
   val nextFreeSnapshotList = Wire(Vec(freeDepth, UInt(LogNumPhys.W)))
@@ -435,9 +527,44 @@ class Backend extends Module {
   val nextFreeSnapshotCount = free.io.checkpoint.count +
     Mux(snapshotDoesFree, 1.U, 0.U) - Mux(snapshotDoesAlloc, 1.U, 0.U)
 
-  when(interruptFire || restoreBranchCheckpoint) {
+  val branchCommitFire = rob.io.commit.valid && commitIsBranch
+  val allocBranchCheckpoint = rob.io.enq.valid && dispatchIsBranch
+  val checkpointFreeListAfterCommit = Wire(Vec(BranchCheckpointEntries, Vec(freeDepth, UInt(LogNumPhys.W))))
+  val checkpointFreeTailAfterCommit = Wire(Vec(BranchCheckpointEntries, UInt(log2Ceil(freeDepth).W)))
+  val checkpointFreeCountAfterCommit = Wire(Vec(BranchCheckpointEntries, UInt(log2Ceil(freeDepth + 1).W)))
+  for (i <- 0 until BranchCheckpointEntries) {
+    checkpointFreeListAfterCommit(i) := branchCheckpointFreeList(i)
+    checkpointFreeTailAfterCommit(i) := branchCheckpointFreeTail(i)
+    checkpointFreeCountAfterCommit(i) := branchCheckpointFreeCount(i)
+    val updateCheckpointFree = branchCheckpointValid(i) && rob.io.freeReq &&
+      !(branchCommitFire && branchCheckpointCommitMatches(i))
+    when(updateCheckpointFree) {
+      checkpointFreeListAfterCommit(i)(branchCheckpointFreeTail(i)) := rob.io.freePdst
+      checkpointFreeTailAfterCommit(i) := Mux(branchCheckpointFreeTail(i) === (freeDepth - 1).U,
+        0.U, branchCheckpointFreeTail(i) + 1.U)
+      checkpointFreeCountAfterCommit(i) := branchCheckpointFreeCount(i) + 1.U
+    }
+  }
+
+  when(interruptFire) {
     systemInFlight := false.B
-    branchCheckpointValid := false.B
+    for (i <- 0 until BranchCheckpointEntries) {
+      branchCheckpointValid(i) := false.B
+    }
+    activeBranchMask := 0.U
+  }.elsewhen(restoreBranchCheckpoint) {
+    systemInFlight := false.B
+    when(earlyRedirect.valid) {
+      for (i <- 0 until BranchCheckpointEntries) {
+        branchCheckpointValid(i) := branchCheckpointValid(i) && earlyRedirectBranchMask(i)
+      }
+      activeBranchMask := earlyRedirectBranchMask
+    }.otherwise {
+      for (i <- 0 until BranchCheckpointEntries) {
+        branchCheckpointValid(i) := false.B
+      }
+      activeBranchMask := 0.U
+    }
   }.otherwise {
     when(rob.io.commit.valid && commitIsSystem) {
       systemInFlight := false.B
@@ -445,26 +572,37 @@ class Backend extends Module {
     when(rob.io.enq.valid && dispatchIsSystem) {
       systemInFlight := true.B
     }
-    when(rob.io.commit.valid && commitIsBranch) {
-      branchCheckpointValid := false.B
+    for (i <- 0 until BranchCheckpointEntries) {
+      branchCheckpointFreeList(i) := checkpointFreeListAfterCommit(i)
+      branchCheckpointFreeTail(i) := checkpointFreeTailAfterCommit(i)
+      branchCheckpointFreeCount(i) := checkpointFreeCountAfterCommit(i)
     }
-    when(branchCheckpointValid && rob.io.freeReq && !commitIsBranch) {
-      branchCheckpointFreeList(branchCheckpointFreeTail) := rob.io.freePdst
-      branchCheckpointFreeTail := Mux(branchCheckpointFreeTail === (freeDepth - 1).U,
-        0.U, branchCheckpointFreeTail + 1.U)
-      branchCheckpointFreeCount := branchCheckpointFreeCount + 1.U
+    when(branchCommitFire && branchCheckpointCommitHit) {
+      branchCheckpointValid(branchCheckpointCommitIdx) := false.B
     }
-    when(rob.io.enq.valid && dispatchIsBranch && !branchCheckpointValid) {
-      branchCheckpointValid := true.B
-      branchCheckpointRmt := rmt.io.checkpoint
-      when(instrWritesReg) {
-        branchCheckpointRmt(instr.rd) := free.io.allocPdst
+    when(clearResolvedBranchMask.valid) {
+      for (i <- 0 until BranchCheckpointEntries) {
+        when(clearResolvedBranchMask.bits(i)) {
+          branchCheckpointValid(i) := false.B
+        }
       }
-      branchCheckpointFreeList := nextFreeSnapshotList
-      branchCheckpointFreeHead := nextFreeSnapshotHead
-      branchCheckpointFreeTail := nextFreeSnapshotTail
-      branchCheckpointFreeCount := nextFreeSnapshotCount
     }
+    when(allocBranchCheckpoint) {
+      branchCheckpointValid(branchCheckpointAllocIdx) := true.B
+      branchCheckpointRobIdx(branchCheckpointAllocIdx) := rob.io.enqIdx
+      branchCheckpointRmt(branchCheckpointAllocIdx) := rmt.io.checkpoint
+      when(instrWritesReg) {
+        branchCheckpointRmt(branchCheckpointAllocIdx)(instr.rd) := free.io.allocPdst
+      }
+      branchCheckpointFreeList(branchCheckpointAllocIdx) := nextFreeSnapshotList
+      branchCheckpointFreeHead(branchCheckpointAllocIdx) := nextFreeSnapshotHead
+      branchCheckpointFreeTail(branchCheckpointAllocIdx) := nextFreeSnapshotTail
+      branchCheckpointFreeCount(branchCheckpointAllocIdx) := nextFreeSnapshotCount
+    }
+    val commitClearMask = Mux(branchCommitFire && branchCheckpointCommitHit,
+      UIntToOH(branchCheckpointCommitIdx, BranchCheckpointEntries), 0.U)
+    activeBranchMask := (activeBranchMask & ~clearResolvedBranchMask.bits & ~commitClearMask) |
+      Mux(allocBranchCheckpoint, dispatchBranchAllocBit, 0.U)
   }
 
   // ===== ROB 写回 =====
@@ -477,20 +615,31 @@ class Backend extends Module {
   rob.io.wb.bits.cause  := wbCause
   rob.io.wb.bits.taken  := wbTaken
   rob.io.wb.bits.target := wbTarget
+  rob.io.wb.bits.redirectHandled := wbRedirectHandled
 
   // ===== IssueQueue flush =====
   issue.io.flush.valid := rob.io.flushIssue || interruptFire
   issue.io.flush.bits  := rob.io.redirect.bits.robIdx
+  issue.io.clearBranchMask := clearResolvedBranchMask
+  issue.io.flushBranchMask.valid := earlyRedirect.valid
+  issue.io.flushBranchMask.bits := branchResolveBit
+  rob.io.clearBranchMask := clearResolvedBranchMask
+  rob.io.flushBranchMask.valid := earlyRedirect.valid
+  rob.io.flushBranchMask.bits.mask := branchResolveBit
+  rob.io.flushBranchMask.bits.robIdx := earlyRedirect.bits.robIdx
   rob.io.flushAll := interruptFire
   storeBufferFlush := rob.io.flushIssue || interruptFire
   storeBuffer.io.flush := storeBufferFlush
+  storeBuffer.io.clearBranchMask := clearResolvedBranchMask
+  storeBuffer.io.flushBranchMask.valid := earlyRedirect.valid
+  storeBuffer.io.flushBranchMask.bits := branchResolveBit
   when(rob.io.flushIssue || interruptFire) {
     deferredAluValid := false.B
   }
 
   // ===== 对外接口 =====
-  io.redirect.valid := rob.io.redirect.valid || interruptFire
-  io.redirect.bits := rob.io.redirect.bits
+  io.redirect.valid := earlyRedirect.valid || rob.io.redirect.valid || interruptFire
+  io.redirect.bits := Mux(earlyRedirect.valid, earlyRedirect.bits, rob.io.redirect.bits)
   when(interruptFire) {
     io.redirect.bits.target := csr.io.interrupt.target
     io.redirect.bits.robIdx := 0.U
@@ -508,7 +657,7 @@ class Backend extends Module {
 
   // ===== dispatchReady =====
   // ROB 有空 + (不写寄存器 或 FreeList 有空) + IssueQueue 有空
-  io.dispatchReady := !interruptPending && !systemInFlight && !branchCheckpointBusy &&
+  io.dispatchReady := !interruptPending && !redirectThisCycle && !systemInFlight && !branchCheckpointBusy &&
     rob.io.enqReady && issue.io.enqReady &&
     (!instrWritesReg || free.io.allocAvail)
 

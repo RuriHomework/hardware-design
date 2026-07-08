@@ -28,6 +28,10 @@ object CoreConfig {
   val StoreBufferEntries = 8
   val LogStoreBufferEntries = log2Ceil(StoreBufferEntries)
 
+  // ===== Branch Checkpoints =====
+  val BranchCheckpointEntries = 4
+  val LogBranchCheckpointEntries = log2Ceil(BranchCheckpointEntries)
+
   // ===== 分支预测 =====
   val BtbEntries      = 64
   val BhtEntries      = 256

@@ -35,6 +35,7 @@ class IssueQueue extends Module {
       val usesRs2 = Bool()
       val predTaken = Bool()
       val predTarget = UInt(PcWidth.W)
+      val branchMask = UInt(BranchCheckpointEntries.W)
       val robIdx = UInt(RobIdWidth.W)
     }))
     val enqReady = Output(Bool())
@@ -52,6 +53,7 @@ class IssueQueue extends Module {
       val usesRs2 = Bool()        // true=R型 b=rs2; false=I型 b=imm
       val predTaken = Bool()
       val predTarget = UInt(PcWidth.W)
+      val branchMask = UInt(BranchCheckpointEntries.W)
       val robIdx = UInt(RobIdWidth.W)
     })
     val deqReady = Input(Bool())
@@ -69,6 +71,8 @@ class IssueQueue extends Module {
 
     // flush（来自 ROB 的重定向）
     val flush = Input(Valid(UInt(RobIdWidth.W)))  // flush robIdx 之后的所有项
+    val clearBranchMask = Input(Valid(UInt(BranchCheckpointEntries.W)))
+    val flushBranchMask = Input(Valid(UInt(BranchCheckpointEntries.W)))
 
     // 调试
     val dbgCount = Output(UInt((log2Ceil(IssueEntries) + 1).W))
@@ -94,6 +98,7 @@ class IssueQueue extends Module {
     val usesRs2    = Bool()
     val predTaken  = Bool()
     val predTarget = UInt(PcWidth.W)
+    val branchMask = UInt(BranchCheckpointEntries.W)
     val robIdx     = UInt(RobIdWidth.W)
     val age         = UInt(32.W)
   }
@@ -119,6 +124,16 @@ class IssueQueue extends Module {
   when(io.flush.valid) {
     for (e <- entries) { e.valid := false.B }
     count := 0.U
+  }.elsewhen(io.flushBranchMask.valid) {
+    for (e <- entries) {
+      when((e.branchMask & io.flushBranchMask.bits).orR) {
+        e.valid := false.B
+      }
+    }
+  }.elsewhen(io.clearBranchMask.valid) {
+    for (e <- entries) {
+      e.branchMask := e.branchMask & ~io.clearBranchMask.bits
+    }
   }
 
   // 找最老的就绪项，避免低下标空洞让年轻 store 越过更老 store。
@@ -160,6 +175,7 @@ class IssueQueue extends Module {
     io.deq.bits.usesRs2    := e.usesRs2
     io.deq.bits.predTaken  := e.predTaken
     io.deq.bits.predTarget := e.predTarget
+    io.deq.bits.branchMask := e.branchMask
     io.deq.bits.robIdx     := e.robIdx
   }.otherwise {
     io.deq.bits := 0.U.asTypeOf(io.deq.bits)
@@ -178,7 +194,7 @@ class IssueQueue extends Module {
   val enqRs2Wakeup = io.enq.bits.usesRs2 && io.cdb.valid &&
                      io.enq.bits.prs2 === io.cdb.bits.pdst
 
-  when(io.enq.valid && canEnq && !io.flush.valid) {
+  when(io.enq.valid && canEnq && !io.flush.valid && !io.flushBranchMask.valid) {
     val idx = enqIdx
     entries(idx).valid      := true.B
     entries(idx).uop        := io.enq.bits.uop
@@ -195,6 +211,7 @@ class IssueQueue extends Module {
     entries(idx).usesRs2    := io.enq.bits.usesRs2
     entries(idx).predTaken  := io.enq.bits.predTaken
     entries(idx).predTarget := io.enq.bits.predTarget
+    entries(idx).branchMask := io.enq.bits.branchMask
     entries(idx).robIdx     := io.enq.bits.robIdx
     entries(idx).age        := nextAge
     nextAge := nextAge + 1.U
@@ -207,10 +224,16 @@ class IssueQueue extends Module {
   }
 
   // count 同步更新：入队 +1, 出队 -1, flush 清零
-  val doEnqIssue = io.enq.valid && canEnq && !io.flush.valid
+  val doEnqIssue = io.enq.valid && canEnq && !io.flush.valid && !io.flushBranchMask.valid
   val doDeqIssue = deqFire
   when(io.flush.valid) {
     count := 0.U
+  }.elsewhen(io.flushBranchMask.valid) {
+    count := PopCount(entries.zipWithIndex.map { case (e, i) =>
+      e.valid &&
+        !(e.branchMask & io.flushBranchMask.bits).orR &&
+        !(doDeqIssue && i.U === readyIdx)
+    })
   }.otherwise {
     val deltaI = Mux(doEnqIssue, 1.S(2.W), 0.S) - Mux(doDeqIssue, 1.S(2.W), 0.S)
     count := (count.asSInt + deltaI).asUInt

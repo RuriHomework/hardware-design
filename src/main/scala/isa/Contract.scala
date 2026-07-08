@@ -146,4 +146,5 @@ class WritebackBundle extends Bundle {
   val cause    = RedirectCause()
   val taken    = Bool()         // 分支/跳转实际是否跳
   val target   = UInt(PcWidth.W) // 实际跳转目标
+  val redirectHandled = Bool()   // 分支误预测已由 execute 阶段早期重定向处理
 }

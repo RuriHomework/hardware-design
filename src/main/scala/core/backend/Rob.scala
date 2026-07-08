@@ -33,6 +33,7 @@ class Rob extends Module {
       val writesReg = Bool()
       val predTaken = Bool()
       val predTarget = UInt(PcWidth.W)
+      val branchMask = UInt(BranchCheckpointEntries.W)
     }))
     val enqReady = Output(Bool())
     val enqIdx   = Output(UInt(RobIdWidth.W))  // 分配的 ROB 槽号
@@ -57,6 +58,12 @@ class Rob extends Module {
       val isRet  = Bool()
     })
 
+    val clearBranchMask = Input(Valid(UInt(BranchCheckpointEntries.W)))
+    val flushBranchMask = Input(Valid(new Bundle {
+      val mask = UInt(BranchCheckpointEntries.W)
+      val robIdx = UInt(RobIdWidth.W)
+    }))
+
     // 释放物理寄存器给 FreeList
     val freeReq   = Output(Bool())
     val freePdst  = Output(UInt(LogNumPhys.W))
@@ -78,6 +85,7 @@ class Rob extends Module {
     val dbgCount = Output(UInt((log2Ceil(RobEntries) + 1).W))
     val dbgHead  = Output(UInt(RobIdWidth.W))
     val dbgTail  = Output(UInt(RobIdWidth.W))
+    val empty = Output(Bool())
   })
 
   class RobEntry extends Bundle {
@@ -93,61 +101,26 @@ class Rob extends Module {
     val taken      = Bool()
     val target     = UInt(PcWidth.W)
     val mispred    = Bool()
+    val redirectHandled = Bool()
     val predTaken  = Bool()
     val predTarget = UInt(PcWidth.W)
+    val branchMask = UInt(BranchCheckpointEntries.W)
   }
 
   val entries = RegInit(VecInit(Seq.fill(RobEntries)(0.U.asTypeOf(new RobEntry))))
   val head = RegInit(0.U(RobIdWidth.W))
   val tail = RegInit(0.U(RobIdWidth.W))
   val count = RegInit(0.U((log2Ceil(RobEntries) + 1).W))
+  val validPop = PopCount(entries.map(_.valid))
+  val headEntry = entries(head)
+  val headIsStore = UopKind.isStore(headEntry.uop)
+  val canCommit = count =/= 0.U && headEntry.valid && headEntry.done &&
+    (!headIsStore || io.commitStoreReady)
 
   // 入队
   val canEnq = count < RobEntries.U
   io.enqReady := canEnq
   io.enqIdx   := tail
-  when(io.flushAll) {
-    for (e <- entries) {
-      e.valid := false.B
-      e.done := false.B
-    }
-    head := tail
-    count := 0.U
-  }.elsewhen(io.enq.valid && canEnq) {
-    entries(tail).valid      := true.B
-    entries(tail).uop        := io.enq.bits.uop
-    entries(tail).pc         := io.enq.bits.pc
-    entries(tail).rd         := io.enq.bits.rd
-    entries(tail).pdst       := io.enq.bits.pdst
-    entries(tail).stalePdst  := io.enq.bits.stalePdst
-    entries(tail).writesReg  := io.enq.bits.writesReg
-    entries(tail).done       := false.B
-    entries(tail).exception  := false.B
-    entries(tail).taken      := false.B
-    entries(tail).target     := 0.U
-    entries(tail).mispred    := false.B
-    entries(tail).predTaken  := io.enq.bits.predTaken
-    entries(tail).predTarget := io.enq.bits.predTarget
-    tail  := tail + 1.U
-  }
-
-  // 写回：根据 robIdx 定位
-  when(io.wb.valid && !io.flushAll) {
-    entries(io.wb.bits.robIdx).done := true.B
-    entries(io.wb.bits.robIdx).taken := io.wb.bits.taken
-    entries(io.wb.bits.robIdx).target := io.wb.bits.target
-    entries(io.wb.bits.robIdx).exception :=
-      io.wb.bits.cause === RedirectCause.EXCEPTION || io.wb.bits.cause === RedirectCause.FLUSH
-    when(io.wb.bits.cause === RedirectCause.MISPRED) {
-      entries(io.wb.bits.robIdx).mispred := true.B
-    }
-  }
-
-  // 提交：从 head 顺序
-  val headEntry = entries(head)
-  val headIsStore = UopKind.isStore(headEntry.uop)
-  val canCommit = count > 0.U && headEntry.valid && headEntry.done &&
-    (!headIsStore || io.commitStoreReady)
 
   io.commit.valid := canCommit
   io.commit.bits.uop        := headEntry.uop
@@ -170,7 +143,7 @@ class Rob extends Module {
   io.freePdst := headEntry.stalePdst
 
   // 重定向：误预测或异常
-  io.redirect.valid := canCommit && (headEntry.mispred || headEntry.exception)
+  io.redirect.valid := canCommit && ((headEntry.mispred && !headEntry.redirectHandled) || headEntry.exception)
   io.redirect.bits.target := Mux(headEntry.exception || headEntry.taken,
     headEntry.target,
     headEntry.pc + 4.U)
@@ -179,7 +152,8 @@ class Rob extends Module {
     Mux(headEntry.mispred, RedirectCause.MISPRED, RedirectCause.NONE))
 
   // 回滚 rename table：commit 误预测时，把 rd 恢复为 stalePdst
-  io.rollback.valid := canCommit && headEntry.mispred && !UopKind.isJump(headEntry.uop) &&
+  io.rollback.valid := canCommit && headEntry.mispred && !headEntry.redirectHandled &&
+    !UopKind.isJump(headEntry.uop) &&
     headEntry.writesReg && headEntry.rd =/= 0.U
   io.rollback.bits.lrd  := headEntry.rd
   io.rollback.bits.pdst := headEntry.stalePdst
@@ -189,31 +163,104 @@ class Rob extends Module {
 
   val commitRedirect = io.redirect.valid
 
-  // 推进 head。redirect 在 commit 点发生时，丢弃所有年轻项。
-  when(commitRedirect && !io.flushAll) {
-    for (e <- entries) {
-      e.valid := false.B
-      e.done := false.B
+  val nextEntries = Wire(Vec(RobEntries, new RobEntry))
+  val nextHead = WireDefault(head)
+  val nextTail = WireDefault(tail)
+  nextEntries := entries
+
+  val flushBranchDist = io.flushBranchMask.bits.robIdx - head
+  val wbDist = io.wb.bits.robIdx - head
+  val wbYoungerThanFlushBranch = wbDist > flushBranchDist
+  val doCommit = canCommit && !commitRedirect && !io.flushAll
+  val doEnq = io.enq.valid && canEnq && !io.flushAll && !commitRedirect && !io.flushBranchMask.valid
+  val wbTargetsCommittedHead = doCommit && io.wb.bits.robIdx === head
+  val wbTargetsFlushedBranchTail =
+    io.flushBranchMask.valid && wbYoungerThanFlushBranch
+  val doWb = io.wb.valid && !io.flushAll && !commitRedirect &&
+    !wbTargetsCommittedHead && !wbTargetsFlushedBranchTail &&
+    entries(io.wb.bits.robIdx).valid
+
+  when(io.flushAll) {
+    for (i <- 0 until RobEntries) {
+      nextEntries(i).valid := false.B
+      nextEntries(i).done := false.B
     }
-    head := tail
-  }.elsewhen(canCommit && !io.flushAll) {
-    entries(head).valid := false.B
-    head  := head + 1.U
+    nextHead := tail
+    nextTail := tail
+  }.elsewhen(commitRedirect) {
+    for (i <- 0 until RobEntries) {
+      nextEntries(i).valid := false.B
+      nextEntries(i).done := false.B
+    }
+    nextHead := tail
+    nextTail := tail
+  }.otherwise {
+    when(io.flushBranchMask.valid) {
+      for (i <- 0 until RobEntries) {
+        val entryDist = i.U(RobIdWidth.W) - head
+        val youngerThanBranch = entryDist > flushBranchDist
+        when(entries(i).valid && youngerThanBranch) {
+          nextEntries(i).valid := false.B
+          nextEntries(i).done := false.B
+        }
+      }
+      nextTail := io.flushBranchMask.bits.robIdx + 1.U
+    }.elsewhen(io.clearBranchMask.valid) {
+      for (i <- 0 until RobEntries) {
+        nextEntries(i).branchMask := entries(i).branchMask & ~io.clearBranchMask.bits
+      }
+    }
+
+    when(doWb) {
+      nextEntries(io.wb.bits.robIdx).done := true.B
+      nextEntries(io.wb.bits.robIdx).taken := io.wb.bits.taken
+      nextEntries(io.wb.bits.robIdx).target := io.wb.bits.target
+      nextEntries(io.wb.bits.robIdx).exception :=
+        io.wb.bits.cause === RedirectCause.EXCEPTION || io.wb.bits.cause === RedirectCause.FLUSH
+      when(io.wb.bits.cause === RedirectCause.MISPRED) {
+        nextEntries(io.wb.bits.robIdx).mispred := true.B
+        nextEntries(io.wb.bits.robIdx).redirectHandled := io.wb.bits.redirectHandled
+      }
+    }
+
+    when(doCommit) {
+      nextEntries(head).valid := false.B
+      nextEntries(head).done := false.B
+      nextHead := head + 1.U
+    }
+
+    when(doEnq) {
+      nextEntries(tail).valid      := true.B
+      nextEntries(tail).uop        := io.enq.bits.uop
+      nextEntries(tail).pc         := io.enq.bits.pc
+      nextEntries(tail).rd         := io.enq.bits.rd
+      nextEntries(tail).pdst       := io.enq.bits.pdst
+      nextEntries(tail).stalePdst  := io.enq.bits.stalePdst
+      nextEntries(tail).writesReg  := io.enq.bits.writesReg
+      nextEntries(tail).done       := false.B
+      nextEntries(tail).exception  := false.B
+      nextEntries(tail).taken      := false.B
+      nextEntries(tail).target     := 0.U
+      nextEntries(tail).mispred    := false.B
+      nextEntries(tail).redirectHandled := false.B
+      nextEntries(tail).predTaken  := io.enq.bits.predTaken
+      nextEntries(tail).predTarget := io.enq.bits.predTarget
+      nextEntries(tail).branchMask := io.enq.bits.branchMask
+      nextTail := tail + 1.U
+    }
   }
 
-  // count 同步更新：入队 +1, commit -1, 二者可同周期发生
-  val doEnq = io.enq.valid && canEnq
-  val delta = Mux(doEnq, 1.S(2.W), 0.S) - Mux(canCommit, 1.S(2.W), 0.S)
-  when(!io.flushAll) {
-    when(commitRedirect) {
-      count := 0.U
-    }.otherwise {
-      count := (count.asSInt + delta).asUInt
-    }
-  }
+  val nextCount = PopCount(nextEntries.map(_.valid))
+  entries := nextEntries
+  head := nextHead
+  tail := nextTail
+  count := nextCount
+
+  assert(count === validPop, "ROB count/valid invariant failed")
 
   // 调试
   io.dbgCount := count
   io.dbgHead  := head
   io.dbgTail  := tail
+  io.empty := count === 0.U
 }

@@ -10,6 +10,7 @@ class StoreBufferEntry extends Bundle {
   val addr   = UInt(PcWidth.W)
   val wdata  = UInt(XLen.W)
   val wmask  = UInt(4.W)
+  val branchMask = UInt(BranchCheckpointEntries.W)
 }
 
 class StoreBuffer extends Module {
@@ -39,6 +40,8 @@ class StoreBuffer extends Module {
     val loadForward = Output(Valid(UInt(XLen.W)))
 
     val flush = Input(Bool())
+    val flushBranchMask = Input(Valid(UInt(BranchCheckpointEntries.W)))
+    val clearBranchMask = Input(Valid(UInt(BranchCheckpointEntries.W)))
 
     val dbgCount = Output(UInt((LogStoreBufferEntries + 1).W))
     val dbgFull = Output(Bool())
@@ -111,6 +114,10 @@ class StoreBuffer extends Module {
   val doEnq = io.enq.valid && io.enqReady
   val doCommit = io.commitFire && commitHit
   val doDrain = io.drainFire && drainHit
+  val validCount = PopCount(entries.map(_.valid))
+  val branchKill = entries.map(e =>
+    io.flushBranchMask.valid && !e.committed && (e.bits.branchMask & io.flushBranchMask.bits).orR)
+  val branchKillVec = VecInit(branchKill)
 
   when(io.flush) {
     for (e <- entries) {
@@ -119,15 +126,22 @@ class StoreBuffer extends Module {
       }
     }
   }.otherwise {
-    when(doDrain) {
-      entries(drainIdx).valid := false.B
-      entries(drainIdx).committed := false.B
+    for ((e, i) <- entries.zipWithIndex) {
+      when(branchKill(i) || (doDrain && drainIdx === i.U)) {
+        e.valid := false.B
+        e.committed := false.B
+      }
     }
   }
-  when(doCommit && !io.flush) {
+  when(io.clearBranchMask.valid && !io.flush && !io.flushBranchMask.valid) {
+    for (e <- entries) {
+      e.bits.branchMask := e.bits.branchMask & ~io.clearBranchMask.bits
+    }
+  }
+  when(doCommit && !io.flush && !branchKillVec(commitIdx)) {
     entries(commitIdx).committed := true.B
   }
-  when(doEnq && !io.flush) {
+  when(doEnq && !io.flush && !io.flushBranchMask.valid) {
     entries(enqIdx).valid := true.B
     entries(enqIdx).committed := false.B
     entries(enqIdx).bits := io.enq.bits
@@ -135,7 +149,6 @@ class StoreBuffer extends Module {
     nextAge := nextAge + 1.U
   }
 
-  val validCount = PopCount(entries.map(_.valid))
   io.dbgCount := validCount
   io.dbgFull := !hasFree
   io.empty := validCount === 0.U
