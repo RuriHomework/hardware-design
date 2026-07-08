@@ -24,23 +24,122 @@ class Top extends Module {
     val dbgCommitRd   = Output(UInt(LogNumLogical.W))
     val dbgCommitData = Output(UInt(XLen.W))
     val dbgCommitWritesReg = Output(Bool())
+    val uartRx = Input(Bool())
+    val uartTx = Output(Bool())
+    val exitValid = Output(Bool())
+    val exitCode = Output(UInt(XLen.W))
+    val loaderActive = Output(Bool())
+    val loaderError = Output(Bool())
   })
 
-  val core = Module(new Core)
-  val imem = Module(new IMem)
-  val dmem = Module(new DMem)
-  core.io.timerInterrupt := false.B
+  val uartClockHz = sys.env.get("BOARD_CLOCK_HZ").flatMap(s => scala.util.Try(s.toInt).toOption).getOrElse(60000000)
+  val uartBaud = sys.env.get("UART_BAUD").flatMap(s => scala.util.Try(s.toInt).toOption).getOrElse(115200)
+  val loader = Module(new SerialLoader(uartClockHz, uartBaud, IMemDepth, DMemDepth))
+  val core = withReset(!loader.io.running) { Module(new Core) }
+  val imem = Module(new IMem(sys.env.get("IMEM_HEX").filter(_.nonEmpty)))
+  val dmem = Module(new DMem(sys.env.get("DMEM_HEX").filter(_.nonEmpty)))
+  val uart = Module(new UartTx(uartClockHz, uartBaud))
+
+  val mmioExit = "h20000000".U(PcWidth.W)
+  val mmioUartTx = "h20000004".U(PcWidth.W)
+  val mmioMtimeLo = "h20000008".U(PcWidth.W)
+  val mmioMtimeHi = "h2000000c".U(PcWidth.W)
+  val mmioMtimecmpLo = "h20000010".U(PcWidth.W)
+  val mmioMtimecmpHi = "h20000014".U(PcWidth.W)
+  val mmioUartStatus = "h20000018".U(PcWidth.W)
+
+  def maskWrite32(old: UInt, data: UInt, mask: UInt): UInt = {
+    Cat((0 until 4).reverse.map { i =>
+      Mux(mask(i), data(8 * i + 7, 8 * i), old(8 * i + 7, 8 * i))
+    })
+  }
+
+  val daddr = core.io.dmem.addr
+  val running = loader.io.running
+  val dwrite = core.io.dmem.wen && running
+  val dmemAccess = daddr(31, 16) === "h1000".U
+  val mmioWrite = dwrite && !dmemAccess
+  val pendingReadAddr = RegInit(0.U(PcWidth.W))
+  val mtime = RegInit(0.U(64.W))
+  val mtimecmp = RegInit("hffffffffffffffff".U(64.W))
+  val exitValid = RegInit(false.B)
+  val exitCode = RegInit(0.U(XLen.W))
+
+  loader.io.rx := io.uartRx
+
+  core.io.timerInterrupt := running && mtime >= mtimecmp
 
   // IMem 连线
   imem.io.addr := core.io.imem.addr
+  imem.io.load.wen := loader.io.imem.wen
+  imem.io.load.addr := loader.io.imem.addr
+  imem.io.load.data := loader.io.imem.data
   core.io.imem.inst := imem.io.inst
 
   // DMem 连线
   dmem.io.addr  := core.io.dmem.addr
   dmem.io.wdata := core.io.dmem.wdata
   dmem.io.wmask := core.io.dmem.wmask
-  dmem.io.wen   := core.io.dmem.wen
-  core.io.dmem.rdata := dmem.io.rdata
+  dmem.io.wen   := running && core.io.dmem.wen && dmemAccess
+  dmem.io.load.wen := loader.io.dmem.wen
+  dmem.io.load.addr := loader.io.dmem.addr
+  dmem.io.load.data := loader.io.dmem.data
+
+  when(!running) {
+    pendingReadAddr := 0.U
+  }.elsewhen(!dwrite) {
+    pendingReadAddr := daddr
+  }
+
+  val mmioReadData = WireDefault(0.U(XLen.W))
+  switch(pendingReadAddr) {
+    is(mmioMtimeLo) { mmioReadData := mtime(31, 0) }
+    is(mmioMtimeHi) { mmioReadData := mtime(63, 32) }
+    is(mmioMtimecmpLo) { mmioReadData := mtimecmp(31, 0) }
+    is(mmioMtimecmpHi) { mmioReadData := mtimecmp(63, 32) }
+    is(mmioUartStatus) { mmioReadData := Cat(0.U(30.W), uart.io.busy, uart.io.in.ready) }
+  }
+  val pendingDmemAccess = pendingReadAddr(31, 16) === "h1000".U
+  core.io.dmem.rdata := Mux(pendingDmemAccess, dmem.io.rdata, mmioReadData)
+
+  uart.io.in.valid := running && mmioWrite && daddr === mmioUartTx && uart.io.in.ready
+  uart.io.in.bits := MuxLookup(daddr(1, 0), core.io.dmem.wdata(7, 0))(Seq(
+    1.U -> core.io.dmem.wdata(15, 8),
+    2.U -> core.io.dmem.wdata(23, 16),
+    3.U -> core.io.dmem.wdata(31, 24)
+  ))
+
+  val nextMtime = WireDefault(mtime + 1.U)
+  val nextMtimecmp = WireDefault(mtimecmp)
+  when(!running) {
+    exitValid := false.B
+    exitCode := 0.U
+    mtime := 0.U
+    mtimecmp := "hffffffffffffffff".U
+  }.otherwise {
+    when(mmioWrite) {
+      when(daddr === mmioExit) {
+        exitValid := true.B
+        exitCode := core.io.dmem.wdata
+      }.elsewhen(daddr === mmioMtimeLo) {
+        nextMtime := Cat(mtime(63, 32), maskWrite32(mtime(31, 0), core.io.dmem.wdata, core.io.dmem.wmask))
+      }.elsewhen(daddr === mmioMtimeHi) {
+        nextMtime := Cat(maskWrite32(mtime(63, 32), core.io.dmem.wdata, core.io.dmem.wmask), mtime(31, 0))
+      }.elsewhen(daddr === mmioMtimecmpLo) {
+        nextMtimecmp := Cat(mtimecmp(63, 32), maskWrite32(mtimecmp(31, 0), core.io.dmem.wdata, core.io.dmem.wmask))
+      }.elsewhen(daddr === mmioMtimecmpHi) {
+        nextMtimecmp := Cat(maskWrite32(mtimecmp(63, 32), core.io.dmem.wdata, core.io.dmem.wmask), mtimecmp(31, 0))
+      }
+    }
+    mtime := nextMtime
+    mtimecmp := nextMtimecmp
+  }
+
+  io.uartTx := Mux(loader.io.active, loader.io.tx, uart.io.tx)
+  io.exitValid := exitValid
+  io.exitCode := exitCode
+  io.loaderActive := loader.io.active
+  io.loaderError := loader.io.error
 
   // 调试
   io.dbgCommit       := core.io.dbgCommit

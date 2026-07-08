@@ -138,19 +138,23 @@ class IssueQueue extends Module {
   // FPGA-friendly selection: pick the lowest-index ready entry. Memory ordering
   // is preserved separately with ROB-relative age, avoiding the old all-pairs
   // 32-bit age comparator network on the critical path.
-  val readyMask = entries.map(e => e.valid && e.rs1Ready && e.rs2Ready)
+  val rawReadyMask = entries.map(e => e.valid && e.rs1Ready && e.rs2Ready)
+  val memoryOrderOkMask = entries.zipWithIndex.map { case (e, i) =>
+    val selectedIsMem = UopKind.isMem(e.uop) || e.uop === FENCE
+    val selectedRobDist = e.robIdx - io.robHead
+    val olderMemPending = entries.zipWithIndex.map { case (other, j) =>
+      val otherRobDist = other.robIdx - io.robHead
+      other.valid && (i != j).B &&
+        (UopKind.isMem(other.uop) || other.uop === FENCE) &&
+        otherRobDist < selectedRobDist
+    }.reduce(_ || _)
+    !selectedIsMem || !olderMemPending
+  }
+  val readyMask = rawReadyMask.zip(memoryOrderOkMask).map { case (ready, orderOk) => ready && orderOk }
+  val hasRawReady = rawReadyMask.reduce(_ || _)
   val hasReady = readyMask.reduce(_ || _)
   val readyIdx = PriorityEncoder(readyMask)
-  val selectedIsMem = hasReady &&
-    (UopKind.isMem(entries(readyIdx).uop) || entries(readyIdx).uop === FENCE)
-  val selectedRobDist = entries(readyIdx).robIdx - io.robHead
-  val olderMemPending = hasReady && entries.zipWithIndex.map { case (e, i) =>
-      val entryRobDist = e.robIdx - io.robHead
-      e.valid && i.U =/= readyIdx &&
-        (UopKind.isMem(e.uop) || e.uop === FENCE) &&
-        entryRobDist < selectedRobDist
-  }.reduce(_ || _)
-  val memoryOrderBlocked = selectedIsMem && olderMemPending
+  val memoryOrderBlocked = hasRawReady && !hasReady
 
   val canSelect = hasReady && !io.flush.valid &&
     !io.flushBranchMask.valid && !memoryOrderBlocked && !deqValidReg

@@ -21,10 +21,12 @@ static constexpr uint32_t NOP    = 0x00000013;
 static constexpr uint32_t IMEM_BASE = 0x00000000;
 static constexpr uint32_t DMEM_BASE = 0x10000000;
 static constexpr uint32_t MMIO_EXIT = 0x20000000;
+static constexpr uint32_t MMIO_UART_TX = 0x20000004;
 static constexpr uint32_t MMIO_MTIME_LO = 0x20000008;
 static constexpr uint32_t MMIO_MTIME_HI = 0x2000000c;
 static constexpr uint32_t MMIO_MTIMECMP_LO = 0x20000010;
 static constexpr uint32_t MMIO_MTIMECMP_HI = 0x20000014;
+static constexpr uint32_t MMIO_UART_STATUS = 0x20000018;
 static constexpr size_t IMEM_SIZE = 64 * 1024;
 static constexpr size_t DMEM_SIZE = 64 * 1024;
 
@@ -341,6 +343,7 @@ int main(int argc, char **argv) {
                 case MMIO_MTIME_HI: return static_cast<uint32_t>(mtime >> 32);
                 case MMIO_MTIMECMP_LO: return static_cast<uint32_t>(mtimecmp);
                 case MMIO_MTIMECMP_HI: return static_cast<uint32_t>(mtimecmp >> 32);
+                case MMIO_UART_STATUS: return 1;
                 default: return 0;
             }
         };
@@ -419,7 +422,7 @@ int main(int argc, char **argv) {
         if (dut->io_dmem_wen) {
             if (perf) {
                 if (dmem.contains(daddr)) perfStats.dmemStores++;
-                else if (daddr >= MMIO_EXIT && daddr <= MMIO_MTIMECMP_HI) perfStats.mmioStores++;
+                else if (daddr >= MMIO_EXIT && daddr <= MMIO_UART_STATUS) perfStats.mmioStores++;
             }
             if (dumpCommits) {
                 std::printf("store: cycle=%llu addr=0x%08x data=0x%08x mask=0x%x\n",
@@ -430,6 +433,9 @@ int main(int argc, char **argv) {
                 halted = true;
                 std::printf("mmio_exit: code=%u cycle=%llu\n",
                     exitCode, static_cast<unsigned long long>(cycle));
+            } else if (daddr == MMIO_UART_TX) {
+                std::putchar(static_cast<char>(dut->io_dmem_wdata & 0xffu));
+                std::fflush(stdout);
             } else if (daddr == MMIO_MTIME_LO || daddr == MMIO_MTIME_HI ||
                        daddr == MMIO_MTIMECMP_LO || daddr == MMIO_MTIMECMP_HI) {
                 uint32_t lo = static_cast<uint32_t>(daddr < MMIO_MTIMECMP_LO ? mtime : mtimecmp);

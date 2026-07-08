@@ -58,11 +58,13 @@ Commands:
   place           BoardTop: stop after place_design and timing report
   route           BoardTop: route and report timing, but do not write bitstream
   bit             Full BoardTop flow, including write_bitstream
+  program [bit]   Program a connected xc7z010 device, default build/vivado/BoardTop.bit
 
 Environment:
   VIVADO_ROOT     Vivado install root, default /home/ruri/Xilinx/Vivado/2024.2
   VIVADO_THREADS  Max Vivado worker threads, default 6
   VIVADO_XDC      BoardTop XDC path relative to repo root, default constraints.xdc
+  VIVADO_BITFILE  Bitstream for "program", default build/vivado/BoardTop.bit
   VIVADO_STAGE    Override stage for ooc: synth, place, or route. Default place
 
 Run scripts/chisel-fast.sh elab <Top> first when the SystemVerilog is stale.
@@ -105,6 +107,10 @@ case "$cmd" in
     fi
     export VIVADO_STAGE="$cmd"
     vivado_batch "scripts/vivado_boardtop_iter.tcl" "BoardTop_${cmd}"
+    ;;
+  program)
+    export VIVADO_BITFILE="${2:-build/vivado/BoardTop.bit}"
+    vivado_batch "scripts/vivado_program.tcl" "BoardTop_program"
     ;;
   -h|--help|help|"")
     usage

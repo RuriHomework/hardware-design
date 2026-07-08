@@ -10,7 +10,10 @@
 #   - sbt, firtool 在 PATH (sbt run 会自动拉取 firtool)
 #   - verilator 在 PATH (brew install verilator)
 
-SHELL := /bin/bash
+SHELL := bash
+
+CHISEL_FIRTOOL_PATH ?= $(HOME)/.cache/llvm-firtool/1.62.1/bin
+export CHISEL_FIRTOOL_PATH
 
 # 项目根目录
 PROJ_ROOT := $(abspath $(CURDIR)/..)
@@ -27,7 +30,7 @@ PROG_DIR  ?= programs/baremetal
 PROG_NAME ?= smoke
 PROG_TEXT ?= $(PROG_DIR)/build/$(PROG_NAME).text.bin
 PROG_DATA ?= $(PROG_DIR)/build/$(PROG_NAME).data.bin
-MAX_CYCLES ?= 200000
+MAX_CYCLES ?= 500000
 SIM_ARGS ?=
 
 # Verilator flags

@@ -166,6 +166,12 @@ scripts/vivado-fast.sh route
 scripts/vivado-fast.sh bit
 ```
 
+烧录已生成的 bitstream：
+
+```bash
+scripts/vivado-fast.sh program
+```
+
 推荐节奏：
 
 - 日常结构优化：`synth` 或 `place`。
@@ -173,6 +179,50 @@ scripts/vivado-fast.sh bit
 - 需要烧录或最终确认：`bit`。
 
 不要把 `bit` 当默认迭代命令。
+
+## 下板后的程序迭代
+
+当前 `BoardTop` 带一个简单 UART loader。硬件 bitstream 固定后，程序镜像可以通过串口写入 IMEM/DMEM，再启动 CPU；只改软件程序时不需要重新跑 Vivado 布线。
+
+板级连接：
+
+- `uartTx`：PL 输出，约束到 `V12`，接 USB-UART RX。
+- `uartRx`：PL 输入，约束到 `V15`，接 USB-UART TX。
+- 串口参数默认 `115200 8N1`。
+
+生成 FreeRTOS smoke 镜像：
+
+```bash
+scripts/build-freertos-image.sh
+```
+
+写入并启动：
+
+```bash
+scripts/uart-load-image.py --device /dev/ttyUSB0 --monitor 10
+```
+
+脚本会依次发送 reset、clear、load IMEM、load DMEM、boot，然后把程序 UART 输出打印到终端。正常 FreeRTOS smoke 会输出类似：
+
+```text
+FreeRTOS boot
+A
+B
+PASS
+```
+
+如果只改 C/汇编程序，重复运行 `scripts/build-freertos-image.sh` 和 `scripts/uart-load-image.py` 即可。只有修改 CPU、memory map、loader、UART 或顶层连线时，才需要重新 elaborate 并跑 Vivado。
+
+也可以把程序预初始化进 bitstream，适合不想接 loader RX 的场景：
+
+```bash
+IMEM_HEX=sim/programs/freertos/build/smoke.text.hex \
+DMEM_HEX=sim/programs/freertos/build/smoke.data.hex \
+scripts/chisel-fast.sh elab BoardTop
+scripts/vivado-fast.sh bit
+```
+
+这种方式每次换程序都要重新生成 bitstream，因此只建议阶段性确认时使用。
 
 ## 快速看 timing 报告
 

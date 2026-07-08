@@ -5,6 +5,7 @@ file mkdir $out_dir
 set part "xc7z010clg400-1"
 set top "BoardTop"
 set sv_file [file join $repo_root "build" "${top}.sv"]
+set vivado_sv_file [file join $out_dir "${top}_vivado.sv"]
 set xdc_file [file join $repo_root "constraints.xdc"]
 if {[info exists ::env(VIVADO_XDC)]} {
   set xdc_file [file join $repo_root $::env(VIVADO_XDC)]
@@ -28,7 +29,15 @@ proc finish_if_stage {wanted label out_dir top} {
 
 set_param general.maxThreads $threads
 
-read_verilog -sv $sv_file
+set in_fh [open $sv_file r]
+set out_fh [open $vivado_sv_file w]
+puts $out_fh {`define ENABLE_INITIAL_MEM_}
+puts $out_fh {`define ENABLE_INITIAL_REG_}
+puts $out_fh [read $in_fh]
+close $in_fh
+close $out_fh
+
+read_verilog -sv $vivado_sv_file
 read_xdc $xdc_file
 
 synth_design -top $top -part $part -flatten_hierarchy rebuilt

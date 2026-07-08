@@ -25,7 +25,7 @@ object CoreConfig {
   val LogIssueEntries = log2Ceil(IssueEntries)
 
   // ===== Store Buffer =====
-  val StoreBufferEntries = 8
+  val StoreBufferEntries = 12
   val LogStoreBufferEntries = log2Ceil(StoreBufferEntries)
 
   // ===== Branch Checkpoints =====
