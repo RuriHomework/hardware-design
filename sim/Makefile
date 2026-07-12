@@ -22,6 +22,8 @@ PROJ_ROOT := $(abspath $(CURDIR)/..)
 RTL_DIR   := $(PROJ_ROOT)/build
 RTL_TOP   ?= Core
 RTL_FILE  := $(RTL_DIR)/$(RTL_TOP).sv
+RTL_CONFIG := $(RTL_DIR)/.$(RTL_TOP).elab-config
+RTL_SOURCES := $(shell find $(PROJ_ROOT)/src/main/scala $(PROJ_ROOT)/project -type f \( -name '*.scala' -o -name '*.sbt' -o -name '*.properties' \)) $(PROJ_ROOT)/build.sbt
 
 # Verilator 工作目录
 OBJ_DIR   := $(CURDIR)/obj_dir
@@ -61,7 +63,7 @@ VFLAGS += -Wno-PINCONNECTEMPTY
 VFLAGS += -CFLAGS -std=c++17
 
 # 默认目标：编译并运行仿真
-.PHONY: sim sim-program wave wave-program uart-pty uart-pty-run preload-pty preload-pty-run riscv-tests clean rtl program
+.PHONY: sim sim-program wave wave-program uart-pty uart-pty-run preload-pty preload-pty-run riscv-tests clean clean-all rtl program FORCE
 
 sim: rtl $(OBJ_DIR)/V$(RTL_TOP)
 	@echo "==> Running simulation"
@@ -138,13 +140,41 @@ program:
 	@echo "==> Building bare-metal program"
 	$(MAKE) -C $(PROG_DIR) TARGET=$(PROG_NAME)
 
+# 仅在展开参数实际变化时更新时间戳，避免每次启动都重新生成 RTL。
+$(RTL_CONFIG): FORCE
+	@mkdir -p $(RTL_DIR)
+	@tmp="$@.tmp"; \
+	{ \
+	  printf '%s\n' "RTL_TOP=$(RTL_TOP)"; \
+	  printf '%s\n' "IMEM_HEX=$(IMEM_HEX)"; \
+	  printf '%s\n' "DMEM_HEX=$(DMEM_HEX)"; \
+	  printf '%s\n' "PRELOAD_BOOT=$(PRELOAD_BOOT)"; \
+	  printf '%s\n' "BOARD_CLOCK_HZ=$(BOARD_CLOCK_HZ)"; \
+	  printf '%s\n' "UART_BAUD=$(UART_BAUD)"; \
+	  printf '%s\n' "IMEM_WORDS=$(IMEM_WORDS)"; \
+	  printf '%s\n' "DMEM_WORDS=$(DMEM_WORDS)"; \
+	  printf '%s\n' "IMEM_BASE=$(IMEM_BASE)"; \
+	  printf '%s\n' "DMEM_BASE=$(DMEM_BASE)"; \
+	  printf '%s\n' "RESET_VECTOR=$(RESET_VECTOR)"; \
+	  printf '%s\n' "QEMU_VIRT_MMIO=$(QEMU_VIRT_MMIO)"; \
+	  printf '%s\n' "MMIO_DEBUG=$(MMIO_DEBUG)"; \
+	  printf '%s\n' "INTERRUPT_DEBUG=$(INTERRUPT_DEBUG)"; \
+	} > "$$tmp"; \
+	if test -r "$@" && cmp -s "$$tmp" "$@"; then \
+	  rm -f "$$tmp"; \
+	else \
+	  mv -f "$$tmp" "$@"; \
+	fi
+
 # 生成 SystemVerilog
-rtl:
+rtl: $(RTL_FILE)
+
+$(RTL_FILE): $(RTL_SOURCES) $(RTL_CONFIG) Makefile
 	@echo "==> Elaborating Chisel -> SystemVerilog"
 	cd $(PROJ_ROOT) && sbt "runMain Elaborate --top $(RTL_TOP)"
 
 # Verilator 编译
-$(OBJ_DIR)/V$(RTL_TOP): $(RTL_FILE) $(TB_SRC)
+$(OBJ_DIR)/V$(RTL_TOP): $(RTL_FILE) $(TB_SRC) Makefile
 	@echo "==> Compiling with Verilator"
 	verilator $(VFLAGS) --cc $(RTL_FILE) --exe $(TB_SRC) --build -Mdir $(OBJ_DIR)
 
@@ -152,4 +182,6 @@ clean:
 	rm -rf $(OBJ_DIR)
 
 clean-all: clean
-	rm -f $(RTL_FILE)
+	rm -f $(RTL_FILE) $(RTL_CONFIG)
+
+FORCE:
