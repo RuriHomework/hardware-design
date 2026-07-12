@@ -7,9 +7,10 @@ import chisel3.util.experimental.loadMemoryFromFileInline
 import isa.CoreConfig._
 
 /**
- * 指令存储器：单口同步读 BRAM。
+ * 指令存储器：组合读、同步写。
  *
- * 地址按字索引（addr >> 2），输出延迟一拍。
+ * 当前 Fetch 按组合取指模型消费 inst；使用组合读可以让 Top/仿真路径
+ * 与 Core testbench 的内存时序保持一致。
  * 由 Top 通过 loadMemoryFromFile 加载程序 hex。
  */
 class IMem(initFile: Option[String] = None) extends Module {
@@ -23,9 +24,9 @@ class IMem(initFile: Option[String] = None) extends Module {
     }
   })
 
-  val mem = SyncReadMem(IMemDepth, UInt(32.W))
+  val mem = Mem(IMemDepth, UInt(32.W))
   initFile.foreach(loadMemoryFromFileInline(mem, _))
-  io.inst := mem.read(io.addr >> 2)
+  io.inst := mem(io.addr >> 2)
 
   when(io.load.wen) {
     mem.write(io.load.addr, io.load.data)

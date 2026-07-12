@@ -9,6 +9,7 @@ object Elaborate extends App {
   }
   val mod: () => RawModule = target match {
     case "Top"       => () => new top.Top
+    case "SimTop"    => () => new top.SimTop
     case "BoardTop"  => () => new top.BoardTop
     case "BlinkTop"  => () => new top.BlinkTop
     case "Core"      => () => new top.Core

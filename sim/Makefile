@@ -34,6 +34,12 @@ MAX_CYCLES ?= 500000
 UART_MAX_CYCLES ?= 0
 SIM_ARGS ?=
 
+export IMEM_HEX
+export DMEM_HEX
+export PRELOAD_BOOT
+export BOARD_CLOCK_HZ
+export UART_BAUD
+
 # Verilator flags
 VFLAGS := --top-module $(RTL_TOP)
 VFLAGS += -I$(RTL_DIR)
@@ -43,10 +49,11 @@ VFLAGS += -Wall
 # Chisel 生成的 RANDOMIZE 块会留未使用信号，抑制这类告警
 VFLAGS += -Wno-UNUSEDSIGNAL
 VFLAGS += -Wno-DECLFILENAME
+VFLAGS += -Wno-PINCONNECTEMPTY
 VFLAGS += -CFLAGS -std=c++17
 
 # 默认目标：编译并运行仿真
-.PHONY: sim sim-program wave wave-program uart-pty uart-pty-run riscv-tests clean rtl program
+.PHONY: sim sim-program wave wave-program uart-pty uart-pty-run preload-pty preload-pty-run riscv-tests clean rtl program
 
 sim: rtl $(OBJ_DIR)/V$(RTL_TOP)
 	@echo "==> Running simulation"
@@ -73,6 +80,18 @@ uart-pty:
 
 uart-pty-run: rtl $(OBJ_DIR)/V$(RTL_TOP)
 	@echo "==> Running BoardTop UART PTY simulation"
+	$(OBJ_DIR)/V$(RTL_TOP) +max-cycles=$(MAX_CYCLES) $(SIM_ARGS)
+
+preload-pty:
+	@test -n "$(PRELOAD_TEXT_HEX)" || (echo "ERROR: set PRELOAD_TEXT_HEX=<imem hex>" >&2; exit 1)
+	@test -n "$(PRELOAD_DATA_HEX)" || (echo "ERROR: set PRELOAD_DATA_HEX=<dmem hex>" >&2; exit 1)
+	@PRELOAD_BOOT=1 \
+	  IMEM_HEX="$(abspath $(PRELOAD_TEXT_HEX))" \
+	  DMEM_HEX="$(abspath $(PRELOAD_DATA_HEX))" \
+	  $(MAKE) RTL_TOP=SimTop TB_SRC=cpp/tb_simtop_uart_pty.cpp SIM_ARGS="$(SIM_ARGS)" MAX_CYCLES="$(UART_MAX_CYCLES)" preload-pty-run
+
+preload-pty-run: rtl $(OBJ_DIR)/V$(RTL_TOP)
+	@echo "==> Running preloaded BoardTop UART PTY simulation"
 	$(OBJ_DIR)/V$(RTL_TOP) +max-cycles=$(MAX_CYCLES) $(SIM_ARGS)
 
 riscv-tests: rtl $(OBJ_DIR)/V$(RTL_TOP)

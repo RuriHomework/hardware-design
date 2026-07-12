@@ -1,3 +1,11 @@
 [submodule "third_party/riscv-tests"]
 	path = third_party/riscv-tests
 	url = https://github.com/riscv-software-src/riscv-tests
+
+[submodule "third_party/nuttx"]
+	path = third_party/nuttx
+	url = https://github.com/apache/nuttx.git
+
+[submodule "third_party/apps"]
+	path = third_party/apps
+	url = https://github.com/apache/nuttx-apps.git

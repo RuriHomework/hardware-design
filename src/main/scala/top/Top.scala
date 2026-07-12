@@ -34,11 +34,18 @@ class Top extends Module {
 
   val uartClockHz = sys.env.get("BOARD_CLOCK_HZ").flatMap(s => scala.util.Try(s.toInt).toOption).getOrElse(60000000)
   val uartBaud = sys.env.get("UART_BAUD").flatMap(s => scala.util.Try(s.toInt).toOption).getOrElse(115200)
+  val preloadBoot = sys.env.get("PRELOAD_BOOT").contains("1")
   val loader = Module(new SerialLoader(uartClockHz, uartBaud, IMemDepth, DMemDepth))
-  val core = withReset(!loader.io.running) { Module(new Core) }
+  val preloadResetCycles = RegInit(Mux(preloadBoot.B, 15.U(4.W), 0.U(4.W)))
+  when(preloadResetCycles =/= 0.U) {
+    preloadResetCycles := preloadResetCycles - 1.U
+  }
+  val running = if (preloadBoot) preloadResetCycles === 0.U else loader.io.running
+  val core = withReset(!running) { Module(new Core) }
   val imem = Module(new IMem(sys.env.get("IMEM_HEX").filter(_.nonEmpty)))
   val dmem = Module(new DMem(sys.env.get("DMEM_HEX").filter(_.nonEmpty)))
   val uart = Module(new UartTx(uartClockHz, uartBaud))
+  val uartTxQueue = Module(new Queue(UInt(8.W), 16))
   val uartRx = withReset(!loader.io.running) { Module(new UartRx(uartClockHz, uartBaud)) }
 
   val mmioExit = "h20000000".U(PcWidth.W)
@@ -57,7 +64,6 @@ class Top extends Module {
   }
 
   val daddr = core.io.dmem.addr
-  val running = loader.io.running
   val dwrite = core.io.dmem.wen && running
   val dmemAccess = daddr(31, 16) === "h1000".U
   val mmioWrite = dwrite && !dmemAccess
@@ -74,7 +80,7 @@ class Top extends Module {
 
   // IMem 连线
   imem.io.addr := core.io.imem.addr
-  imem.io.load.wen := loader.io.imem.wen
+  imem.io.load.wen := !preloadBoot.B && loader.io.imem.wen
   imem.io.load.addr := loader.io.imem.addr
   imem.io.load.data := loader.io.imem.data
   core.io.imem.inst := imem.io.inst
@@ -84,7 +90,7 @@ class Top extends Module {
   dmem.io.wdata := core.io.dmem.wdata
   dmem.io.wmask := core.io.dmem.wmask
   dmem.io.wen   := running && core.io.dmem.wen && dmemAccess
-  dmem.io.load.wen := loader.io.dmem.wen
+  dmem.io.load.wen := !preloadBoot.B && loader.io.dmem.wen
   dmem.io.load.addr := loader.io.dmem.addr
   dmem.io.load.data := loader.io.dmem.data
 
@@ -116,19 +122,20 @@ class Top extends Module {
     is(mmioMtimecmpLo) { mmioReadData := mtimecmp(31, 0) }
     is(mmioMtimecmpHi) { mmioReadData := mtimecmp(63, 32) }
     is(mmioUartStatus) {
-      mmioReadData := Cat(0.U(27.W), uartRx.io.overrun, uartRx.io.framingError, uartRxValid, uart.io.busy, uart.io.in.ready)
+      mmioReadData := Cat(0.U(27.W), uartRx.io.overrun, uartRx.io.framingError, uartRxValid, uart.io.busy, uartTxQueue.io.enq.ready)
     }
     is(mmioUartRxData) { mmioReadData := uartRxData }
   }
   val pendingDmemAccess = pendingReadAddr(31, 16) === "h1000".U
   core.io.dmem.rdata := Mux(pendingDmemAccess, dmem.io.rdata, mmioReadData)
 
-  uart.io.in.valid := running && mmioWrite && daddr === mmioUartTx && uart.io.in.ready
-  uart.io.in.bits := MuxLookup(daddr(1, 0), core.io.dmem.wdata(7, 0))(Seq(
+  uartTxQueue.io.enq.valid := running && mmioWrite && daddr === mmioUartTx
+  uartTxQueue.io.enq.bits := MuxLookup(daddr(1, 0), core.io.dmem.wdata(7, 0))(Seq(
     1.U -> core.io.dmem.wdata(15, 8),
     2.U -> core.io.dmem.wdata(23, 16),
     3.U -> core.io.dmem.wdata(31, 24)
   ))
+  uart.io.in <> uartTxQueue.io.deq
 
   val nextMtime = WireDefault(mtime + 1.U)
   val nextMtimecmp = WireDefault(mtimecmp)
@@ -156,10 +163,11 @@ class Top extends Module {
     mtimecmp := nextMtimecmp
   }
 
-  io.uartTx := Mux(loader.io.active, loader.io.tx, uart.io.tx)
+  val loaderActive = !preloadBoot.B && loader.io.active
+  io.uartTx := Mux(loaderActive, loader.io.tx, uart.io.tx)
   io.exitValid := exitValid
   io.exitCode := exitCode
-  io.loaderActive := loader.io.active
+  io.loaderActive := loaderActive
   io.loaderError := loader.io.error
 
   // 调试
