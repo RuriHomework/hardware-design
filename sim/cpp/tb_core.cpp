@@ -328,7 +328,9 @@ int main(int argc, char **argv) {
     dut->reset = 1;
     dut->io_imem_inst = NOP;
     dut->io_dmem_rdata = 0;
+    dut->io_softwareInterrupt = 0;
     dut->io_timerInterrupt = 0;
+    dut->io_externalInterrupt = 0;
     tick(dut.get(), tfp, time);
     dut->reset = 0;
 
@@ -356,6 +358,8 @@ int main(int argc, char **argv) {
             ? dmem.load32(pendingDmemRead)
             : (imem.contains(pendingDmemRead) ? imem.load32(pendingDmemRead) : loadMmio32(pendingDmemRead));
         dut->io_timerInterrupt = mtime >= mtimecmp;
+        dut->io_softwareInterrupt = 0;
+        dut->io_externalInterrupt = 0;
         dut->eval();
         perfStats.cycles = cycle + 1;
 
@@ -464,9 +468,7 @@ int main(int argc, char **argv) {
                 exitCode = 1;
                 halted = true;
             }
-        } else if (dmem.contains(daddr)) {
-            pendingDmemRead = daddr;
-        } else {
+        } else if (dut->io_dmem_ren) {
             pendingDmemRead = daddr;
         }
 

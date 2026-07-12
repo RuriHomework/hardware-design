@@ -4,6 +4,18 @@ import chisel3._
 import chisel3.util._
 
 object CoreConfig {
+  private def envInt(name: String, default: Int): Int = {
+    sys.env.get(name).flatMap { value =>
+      scala.util.Try(Integer.decode(value).intValue).toOption
+    }.getOrElse(default)
+  }
+
+  private def envLong(name: String, default: Long): Long = {
+    sys.env.get(name).flatMap { value =>
+      scala.util.Try(java.lang.Long.decode(value).longValue).toOption
+    }.getOrElse(default)
+  }
+
   // ===== 机器宽度 =====
   val XLen = 32
 
@@ -38,8 +50,11 @@ object CoreConfig {
   val RasEntries      = 16
 
   // ===== I/D 内存 =====
-  val IMemDepth       = 16384     // 16K 条指令 = 64 KB
-  val DMemDepth       = 16384     // 16K 字 = 64 KB
+  val IMemDepth       = envInt("IMEM_WORDS", 16384)     // 默认 16K 条指令 = 64 KB
+  val DMemDepth       = envInt("DMEM_WORDS", 16384)     // 默认 16K 字 = 64 KB
+  val IMemBase        = envLong("IMEM_BASE", 0L)
+  val DMemBase        = envLong("DMEM_BASE", 0x10000000L)
+  val ResetVector     = envLong("RESET_VECTOR", IMemBase)
 
   // ===== 总线宽度（uop 中立即数、寄存器号携带位） =====
   val ImmWidth        = 32
@@ -68,7 +83,7 @@ object Uop extends ChiselEnum {
   // ---- 系统级 ----
   val CSRRW, CSRRS, CSRRC = Value
   val CSRRWI, CSRRSI, CSRRCI = Value
-  val ECALL, EBREAK, MRET = Value
+  val ECALL, EBREAK, MRET, WFI = Value
   val NOP            = Value
 }
 
@@ -113,7 +128,8 @@ object UopKind {
     u === CSRRWI || u === CSRRSI || u === CSRRCI
   }
   def isSystem(u: Uop.Type): Bool = isCsr(u) || u === Uop.ECALL ||
-    u === Uop.EBREAK || u === Uop.MRET
+    u === Uop.EBREAK || u === Uop.MRET || u === Uop.WFI
   def writesReg(u: Uop.Type): Bool = !isStore(u) && u =/= Uop.ECALL &&
-    u =/= Uop.EBREAK && u =/= Uop.MRET && u =/= Uop.FENCE && u =/= Uop.NOP
+    u =/= Uop.EBREAK && u =/= Uop.MRET && u =/= Uop.WFI &&
+    u =/= Uop.FENCE && u =/= Uop.NOP
 }

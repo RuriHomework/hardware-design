@@ -39,6 +39,14 @@ export DMEM_HEX
 export PRELOAD_BOOT
 export BOARD_CLOCK_HZ
 export UART_BAUD
+export IMEM_WORDS
+export DMEM_WORDS
+export IMEM_BASE
+export DMEM_BASE
+export RESET_VECTOR
+export QEMU_VIRT_MMIO
+export MMIO_DEBUG
+export INTERRUPT_DEBUG
 
 # Verilator flags
 VFLAGS := --top-module $(RTL_TOP)
@@ -89,6 +97,18 @@ preload-pty:
 	  IMEM_HEX="$(abspath $(PRELOAD_TEXT_HEX))" \
 	  DMEM_HEX="$(abspath $(PRELOAD_DATA_HEX))" \
 	  $(MAKE) RTL_TOP=SimTop TB_SRC=cpp/tb_simtop_uart_pty.cpp SIM_ARGS="$(SIM_ARGS)" MAX_CYCLES="$(UART_MAX_CYCLES)" preload-pty-run
+
+nuttx-pty:
+	@test -n "$(NUTTX_HEX)" || (echo "ERROR: set NUTTX_HEX=<flat nuttx hex>" >&2; exit 1)
+	@PRELOAD_TEXT_HEX="$(NUTTX_HEX)" \
+	  PRELOAD_DATA_HEX="$(NUTTX_HEX)" \
+	  IMEM_WORDS="$${IMEM_WORDS:-262144}" \
+	  DMEM_WORDS="$${DMEM_WORDS:-262144}" \
+	  IMEM_BASE="$${IMEM_BASE:-0x80000000}" \
+	  DMEM_BASE="$${DMEM_BASE:-0x80000000}" \
+	  RESET_VECTOR="$${RESET_VECTOR:-0x80000000}" \
+	  QEMU_VIRT_MMIO=1 \
+	  $(MAKE) preload-pty SIM_ARGS="$(SIM_ARGS)" UART_MAX_CYCLES="$(UART_MAX_CYCLES)"
 
 preload-pty-run: rtl $(OBJ_DIR)/V$(RTL_TOP)
 	@echo "==> Running preloaded BoardTop UART PTY simulation"

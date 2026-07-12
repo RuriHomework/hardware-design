@@ -63,7 +63,9 @@ class CoreSpec extends AnyFlatSpec with ChiselScalatestTester {
 
   it should "execute ADDI then commit" in {
     test(new Core).withAnnotations(Seq(WriteVcdAnnotation)) { c =>
+      c.io.softwareInterrupt.poke(false.B)
       c.io.timerInterrupt.poke(false.B)
+      c.io.externalInterrupt.poke(false.B)
       // 程序：x1=42, x2=52, x3=94
       val prog = Array[BigInt](
         addi(1, 0, 42),   // x1 = 42
@@ -112,7 +114,9 @@ class CoreSpec extends AnyFlatSpec with ChiselScalatestTester {
 
   it should "execute store, load, and dependent ALU operations" in {
     test(new Core) { c =>
+      c.io.softwareInterrupt.poke(false.B)
       c.io.timerInterrupt.poke(false.B)
+      c.io.externalInterrupt.poke(false.B)
       val prog = Array[BigInt](
         addi(1, 0, 0x100), // base
         addi(2, 0, 42),    // value
@@ -158,7 +162,9 @@ class CoreSpec extends AnyFlatSpec with ChiselScalatestTester {
 
   it should "commit JAL with link data and redirect metadata" in {
     test(new Core) { c =>
+      c.io.softwareInterrupt.poke(false.B)
       c.io.timerInterrupt.poke(false.B)
+      c.io.externalInterrupt.poke(false.B)
       val prog = Array[BigInt](
         jal(1, 8),        // x1 = pc + 4, target pc = 8
         addi(2, 0, 1),    // should be flushed after the JAL redirect
@@ -205,7 +211,9 @@ class CoreSpec extends AnyFlatSpec with ChiselScalatestTester {
 
   it should "flush a younger store after a JAL redirect before it reaches memory" in {
     test(new Core) { c =>
+      c.io.softwareInterrupt.poke(false.B)
       c.io.timerInterrupt.poke(false.B)
+      c.io.externalInterrupt.poke(false.B)
       val prog = Array[BigInt](
         addi(1, 0, 0x100),
         addi(2, 0, 99),
@@ -246,7 +254,9 @@ class CoreSpec extends AnyFlatSpec with ChiselScalatestTester {
 
   it should "trap on ECALL and return with MRET" in {
     test(new Core) { c =>
+      c.io.softwareInterrupt.poke(false.B)
       c.io.timerInterrupt.poke(false.B)
+      c.io.externalInterrupt.poke(false.B)
       val CSRRW = 1
       val CSRRS = 2
       val prog = Array[BigInt](
@@ -311,7 +321,9 @@ class CoreSpec extends AnyFlatSpec with ChiselScalatestTester {
       )
 
       c.io.dmem.rdata.poke(0.U)
+      c.io.softwareInterrupt.poke(false.B)
       c.io.timerInterrupt.poke(false.B)
+      c.io.externalInterrupt.poke(false.B)
       var commits = scala.collection.mutable.ListBuffer[(Int, BigInt)]()
       var pendingSeen = false
       var fireSeen = false

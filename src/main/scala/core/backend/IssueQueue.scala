@@ -150,7 +150,17 @@ class IssueQueue extends Module {
     }.reduce(_ || _)
     !selectedIsMem || !olderMemPending
   }
-  val readyMask = rawReadyMask.zip(memoryOrderOkMask).map { case (ready, orderOk) => ready && orderOk }
+  val systemOrderOkMask = entries.zipWithIndex.map { case (e, i) =>
+    val selectedDist = e.robIdx - io.robHead
+    val olderSystemPending = entries.zipWithIndex.map { case (other, j) =>
+      val otherDist = other.robIdx - io.robHead
+      other.valid && (i != j).B && UopKind.isSystem(other.uop) && otherDist < selectedDist
+    }.reduce(_ || _)
+    (!UopKind.isSystem(e.uop) || e.robIdx === io.robHead) && !olderSystemPending
+  }
+  val readyMask = rawReadyMask.zip(memoryOrderOkMask).zip(systemOrderOkMask).map {
+    case ((ready, memoryOrderOk), systemOrderOk) => ready && memoryOrderOk && systemOrderOk
+  }
   val hasRawReady = rawReadyMask.reduce(_ || _)
   val hasReady = readyMask.reduce(_ || _)
   val oldestReadyMask = (0 until IssueEntries).map { i =>

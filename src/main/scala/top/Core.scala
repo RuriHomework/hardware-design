@@ -29,9 +29,12 @@ class Core extends Module {
       val wdata = Output(UInt(XLen.W))
       val wmask = Output(UInt(4.W))
       val wen   = Output(Bool())
+      val ren   = Output(Bool())
       val rdata = Input(UInt(XLen.W))
     }
+    val softwareInterrupt = Input(Bool())
     val timerInterrupt = Input(Bool())
+    val externalInterrupt = Input(Bool())
     // 调试观察口
     val dbgCommit = Output(new RetireInfo)
     val dbgCommitValid = Output(Bool())
@@ -109,11 +112,14 @@ class Core extends Module {
   be.io.dispatch := fetch.io.dispatch
   fetch.io.dispatchReady := be.io.dispatchReady
   be.io.dmem.rdata := io.dmem.rdata
+  be.io.softwareInterrupt := io.softwareInterrupt
   be.io.timerInterrupt := io.timerInterrupt
+  be.io.externalInterrupt := io.externalInterrupt
   io.dmem.addr  := be.io.dmem.addr
   io.dmem.wdata := be.io.dmem.wdata
   io.dmem.wmask := be.io.dmem.wmask
   io.dmem.wen   := be.io.dmem.wen
+  io.dmem.ren   := be.io.dmem.ren
 
   io.dbgCommit       := be.io.retire.bits
   io.dbgCommitValid  := be.io.retire.valid

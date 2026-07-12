@@ -58,7 +58,7 @@ class Fetch extends Module {
   })
 
   // ===== PC 寄存器 =====
-  val pc = RegInit(0.U(PcWidth.W))
+  val pc = RegInit(ResetVector.U(PcWidth.W))
 
   // ===== 取指地址选择 =====
   val redirValid = io.redirect.valid
@@ -83,7 +83,7 @@ class Fetch extends Module {
 
   // ===== 指令寄存器（IF→ID 流水寄存器） =====
   val instReg = RegInit(Instr.NOP)
-  val pcReg   = RegInit(0.U(PcWidth.W))
+  val pcReg   = RegInit(ResetVector.U(PcWidth.W))
   val predTakenReg = RegInit(false.B)
   val predTargetReg = RegInit(0.U(PcWidth.W))
   val redirectBubble = RegInit(false.B)

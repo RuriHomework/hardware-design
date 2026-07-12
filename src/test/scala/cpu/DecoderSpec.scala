@@ -12,6 +12,15 @@ import isa.Instr._
 class DecoderSpec extends AnyFlatSpec with ChiselScalatestTester {
   behavior of "Decoder"
 
+  it should "decode WFI as a system hint" in {
+    test(new Decoder) { c =>
+      c.io.inst.poke("h10500073".U)
+      c.io.pc.poke(0.U)
+      c.io.out.uop.expect(WFI)
+      c.io.out.writesReg.expect(false.B)
+    }
+  }
+
   it should "decode ADDI x1, x0, 42" in {
     test(new Decoder) { d =>
       // ADDI x1, x0, 42 = 0x02a00093

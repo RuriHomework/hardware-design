@@ -26,7 +26,8 @@ class IMem(initFile: Option[String] = None) extends Module {
 
   val mem = Mem(IMemDepth, UInt(32.W))
   initFile.foreach(loadMemoryFromFileInline(mem, _))
-  io.inst := mem(io.addr >> 2)
+  val wordAddr = (io.addr >> 2)(log2Ceil(IMemDepth) - 1, 0)
+  io.inst := mem(wordAddr)
 
   when(io.load.wen) {
     mem.write(io.load.addr, io.load.data)

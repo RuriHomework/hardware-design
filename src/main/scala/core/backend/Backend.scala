@@ -38,9 +38,12 @@ class Backend extends Module {
       val wdata = Output(UInt(XLen.W))
       val wmask = Output(UInt(4.W))
       val wen   = Output(Bool())
+      val ren   = Output(Bool())
       val rdata = Input(UInt(XLen.W))
     }
+    val softwareInterrupt = Input(Bool())
     val timerInterrupt = Input(Bool())
+    val externalInterrupt = Input(Bool())
 
     // 调试：commit 时的逻辑寄存器号 + 数据（从 PRF 读 pdst）
     val dbgCommitRd   = Output(UInt(LogNumLogical.W))
@@ -106,7 +109,9 @@ class Backend extends Module {
   val lsu = Module(new Lsu)
   val mdu = Module(new MulDiv)
   val csr = Module(new CsrFile)
-  csr.io.timerInterrupt := io.timerInterrupt
+  csr.io.interruptLines.software := io.softwareInterrupt
+  csr.io.interruptLines.timer := io.timerInterrupt
+  csr.io.interruptLines.external := io.externalInterrupt
 
   // ===== Dispatch: rename + 分配 =====
   val dispatchValid = io.dispatch.valid
@@ -240,6 +245,8 @@ class Backend extends Module {
   val deqIsStore = deq.valid && UopKind.isStore(deq.bits.uop)
   val deqIsFence = deq.valid && deq.bits.uop === FENCE
   val deqIsMdu = deq.valid && MulDiv.accepts(deq.bits.uop)
+  val deqIsSystem = deq.valid && UopKind.isSystem(deq.bits.uop)
+  val deqSystemOrderBlocked = deqIsSystem && deq.bits.robIdx =/= rob.io.dbgHead
   val deqMemAddr = deq.bits.a + deq.bits.imm.asUInt
   storeBuffer.io.robHead := rob.io.dbgHead
   storeBuffer.io.commitRobIdx := rob.io.dbgHead
@@ -276,7 +283,7 @@ class Backend extends Module {
     !(deqIsLsu && lsu.io.busy) && !(deqIsMdu && mdu.io.busy) &&
     !(deqIsStore && !storeBuffer.io.enqReady) &&
     !(deqIsLoad && loadStoreWait) &&
-    !(deqIsFence && !storeBuffer.io.empty)
+    !(deqIsFence && !storeBuffer.io.empty) && !deqSystemOrderBlocked
   val canIssue = canIssueBase
   val loadIssueNeedsDmem = deqIsLoad && canIssueBase && !storeBuffer.io.loadForward.valid
   val storeDrainFire = storeBuffer.io.drainValid && !loadIssueNeedsDmem && !storeBufferFlush
@@ -443,6 +450,7 @@ class Backend extends Module {
   io.dmem.wdata := Mux(storeDrainFire, storeBuffer.io.drain.wdata, lsu.io.dmem.wdata)
   io.dmem.wmask := Mux(storeDrainFire, storeBuffer.io.drain.wmask, lsu.io.dmem.wmask)
   io.dmem.wen   := storeBuffer.io.drain.wen
+  io.dmem.ren   := lsu.io.dmem.ren && !storeDrainFire
 
   mdu.io.cmd.valid := deq.valid && canIssue && MulDiv.accepts(deq.bits.uop)
   mdu.io.cmd.bits.uop := deq.bits.uop
@@ -455,7 +463,7 @@ class Backend extends Module {
   csr.io.cmd.bits.addr := deq.bits.imm.asUInt(11, 0)
   csr.io.cmd.bits.src := Mux(CsrFile.isImm(deq.bits.uop), deq.bits.zimm, deq.bits.a)
   val backendDrainedForInterrupt = rob.io.empty && issue.io.dbgCount === 0.U &&
-    !deferredAluValid &&
+    !deq.valid && !deferredAluValid &&
     !lsu.io.busy && !mdu.io.busy && storeBuffer.io.empty
   val interruptFire = interruptPending && backendDrainedForInterrupt && io.dispatch.valid
   csr.io.interrupt.fire := interruptFire

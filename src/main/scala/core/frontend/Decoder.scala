@@ -195,6 +195,7 @@ class Decoder extends Module {
       when(inst === "h00000073".U) { out.uop := ECALL  }
       when(inst === "h00100073".U) { out.uop := EBREAK }
       when(inst === "h30200073".U) { out.uop := MRET   }
+      when(inst === "h10500073".U) { out.uop := WFI    }
       when(f3 =/= 0.U) {
         out.imm := inst(31, 20).asSInt
         out.writesReg := true.B

@@ -31,6 +31,7 @@ class Lsu extends Module {
       val wdata = Output(UInt(XLen.W))
       val wmask = Output(UInt(4.W))
       val wen   = Output(Bool())
+      val ren   = Output(Bool())
       val rdata = Input(UInt(XLen.W))
     }
     val forward = Input(Valid(UInt(XLen.W)))
@@ -66,6 +67,7 @@ class Lsu extends Module {
   io.dmem.wdata := wdataAligned
   io.dmem.wmask := wmask
   io.dmem.wen   := false.B
+  io.dmem.ren   := false.B
   io.result := 0.U
   io.done   := false.B
   io.busy   := state =/= sIdle
@@ -82,6 +84,7 @@ class Lsu extends Module {
         }.elsewhen(UopKind.isLoad(io.cmd.bits.uop)) {
           // load：发地址，下拍收数据
           io.dmem.addr  := addr
+          io.dmem.ren   := !io.forward.valid
           byteOffReg    := byteOff
           forwardValidReg := io.forward.valid
           forwardDataReg := io.forward.bits

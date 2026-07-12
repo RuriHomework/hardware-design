@@ -38,7 +38,8 @@ static void tick(VSimTop *dut) {
 
 class PtyUart {
 public:
-    explicit PtyUart(int clocksPerBit_) : clocksPerBit(clocksPerBit_) {}
+    PtyUart(int clocksPerBit_, bool mirrorTx_, bool mirrorRx_)
+        : clocksPerBit(clocksPerBit_), mirrorTx(mirrorTx_), mirrorRx(mirrorRx_) {}
 
     bool openPty() {
         char slaveName[128] = {};
@@ -79,6 +80,8 @@ private:
 
     int masterFd = -1;
     int clocksPerBit = 1;
+    bool mirrorTx = false;
+    bool mirrorRx = false;
     std::string slavePath;
     std::deque<uint8_t> hostToDut;
 
@@ -97,7 +100,13 @@ private:
         while (true) {
             const ssize_t n = read(masterFd, buf, sizeof(buf));
             if (n > 0) {
-                for (ssize_t i = 0; i < n; ++i) hostToDut.push_back(buf[i]);
+                for (ssize_t i = 0; i < n; ++i) {
+                    if (mirrorRx) {
+                        std::printf("[host-rx 0x%02x]\n", buf[i]);
+                        std::fflush(stdout);
+                    }
+                    hostToDut.push_back(buf[i]);
+                }
                 continue;
             }
             if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return;
@@ -137,6 +146,10 @@ private:
     }
 
     void writeHostByte(uint8_t byte) {
+        if (mirrorTx) {
+            std::fputc(byte, stdout);
+            std::fflush(stdout);
+        }
         const ssize_t n = write(masterFd, &byte, 1);
         if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EIO) {
             std::fprintf(stderr, "ERROR: PTY write failed: %s\n", std::strerror(errno));
@@ -179,6 +192,8 @@ int main(int argc, char **argv) {
     const uint64_t clockHz = plusArgU64("+clock-hz=", argc, argv, 60000000);
     const uint64_t baud = plusArgU64("+baud=", argc, argv, 115200);
     const bool dumpCommits = plusArgU64("+dump-commits=", argc, argv, 0) != 0;
+    const bool uartStdout = plusArgU64("+uart-stdout=", argc, argv, 0) != 0;
+    const bool uartRxStdout = plusArgU64("+uart-rx-stdout=", argc, argv, 0) != 0;
     const int clocksPerBit = static_cast<int>((clockHz + baud / 2) / baud);
 
     auto dut = new VSimTop;
@@ -189,7 +204,7 @@ int main(int argc, char **argv) {
     for (int i = 0; i < 8; ++i) tick(dut);
     dut->reset = 0;
 
-    PtyUart uart(clocksPerBit > 0 ? clocksPerBit : 1);
+    PtyUart uart(clocksPerBit > 0 ? clocksPerBit : 1, uartStdout, uartRxStdout);
     if (!uart.openPty()) {
         delete dut;
         return 1;
