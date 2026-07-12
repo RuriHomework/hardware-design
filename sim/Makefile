@@ -45,7 +45,7 @@ VFLAGS += -Wno-DECLFILENAME
 VFLAGS += -CFLAGS -std=c++17
 
 # 默认目标：编译并运行仿真
-.PHONY: sim sim-program wave wave-program clean rtl program
+.PHONY: sim sim-program wave wave-program riscv-tests clean rtl program
 
 sim: rtl $(OBJ_DIR)/V$(RTL_TOP)
 	@echo "==> Running simulation"
@@ -66,6 +66,26 @@ wave-program: program rtl $(OBJ_DIR)/V$(RTL_TOP)
 	@echo "==> Running program simulation with VCD trace"
 	ENABLE_TRACE=1 $(OBJ_DIR)/V$(RTL_TOP) +text=$(PROG_TEXT) +data=$(PROG_DATA) +max-cycles=$(MAX_CYCLES) $(SIM_ARGS)
 	@echo "==> VCD waveform: $(CURDIR)/simx.vcd"
+
+riscv-tests: rtl $(OBJ_DIR)/V$(RTL_TOP)
+	@set -euo pipefail; \
+	tests="$$( $(MAKE) -s -C programs/riscv-tests list )"; \
+	pass=0; fail=0; \
+	for test in $$tests; do \
+	  echo "==> $$test"; \
+	  $(MAKE) -s -C programs/riscv-tests TARGET=$$test target; \
+	  if $(OBJ_DIR)/V$(RTL_TOP) \
+	    +text=programs/riscv-tests/build/$$test.text.bin \
+	    +data=programs/riscv-tests/build/$$test.data.bin \
+	    +max-cycles=$(MAX_CYCLES) $(SIM_ARGS); then \
+	    pass=$$((pass + 1)); \
+	  else \
+	    fail=$$((fail + 1)); \
+	    echo "FAIL: $$test"; \
+	  fi; \
+	done; \
+	echo "==> riscv-tests summary: pass=$$pass fail=$$fail"; \
+	test $$fail -eq 0
 
 program:
 	@echo "==> Building bare-metal program"
