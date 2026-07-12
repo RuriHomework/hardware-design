@@ -251,6 +251,16 @@ class Backend extends Module {
   storeBuffer.io.load.valid := deqIsLoad
   storeBuffer.io.load.bits.robIdx := deq.bits.robIdx
   storeBuffer.io.load.bits.addr := deqMemAddr
+  val deqLoadMask = WireDefault(0.U(4.W))
+  val deqLoadByteOff = deqMemAddr(1, 0)
+  switch(deq.bits.uop) {
+    is(LB)  { deqLoadMask := 1.U << deqLoadByteOff }
+    is(LBU) { deqLoadMask := 1.U << deqLoadByteOff }
+    is(LH)  { deqLoadMask := Mux(deqLoadByteOff(1), "b1100".U, "b0011".U) }
+    is(LHU) { deqLoadMask := Mux(deqLoadByteOff(1), "b1100".U, "b0011".U) }
+    is(LW)  { deqLoadMask := "b1111".U }
+  }
+  storeBuffer.io.load.bits.mask := deqLoadMask
   val loadStoreWait = deqIsLoad && storeBuffer.io.loadWait
   val storeForward = deqIsLoad && storeBuffer.io.loadForward.valid
   val lsuRespDone = lsu.io.busy
@@ -392,7 +402,7 @@ class Backend extends Module {
   prf.io.wdata := cdb.bits.data
 
   // ready array：写回时置位；dispatch 分配新 pdst 时清 ready
-  ready.io.setReady.valid := cdb.valid && cdbWritesReg
+  ready.io.setReady.valid := cdb.valid && cdbWritesReg && cdb.bits.pdst =/= 0.U
   ready.io.setReady.bits  := cdb.bits.pdst
   ready.io.clearReady.valid := issue.io.enq.valid && instrWritesReg
   ready.io.clearReady.bits  := free.io.allocPdst

@@ -110,10 +110,10 @@ class IssueQueue extends Module {
   // CDB 监听：更新所有项的 ready 位
   for (e <- entries) {
     when(e.valid && io.cdb.valid) {
-      when(e.usesRs1 && e.prs1 === io.cdb.bits.pdst) {
+      when(e.usesRs1 && e.prs1 =/= 0.U && e.prs1 === io.cdb.bits.pdst) {
         e.rs1Ready := true.B
       }
-      when(e.usesRs2 && e.prs2 === io.cdb.bits.pdst) {
+      when(e.usesRs2 && e.prs2 =/= 0.U && e.prs2 === io.cdb.bits.pdst) {
         e.rs2Ready := true.B
       }
     }
@@ -153,7 +153,15 @@ class IssueQueue extends Module {
   val readyMask = rawReadyMask.zip(memoryOrderOkMask).map { case (ready, orderOk) => ready && orderOk }
   val hasRawReady = rawReadyMask.reduce(_ || _)
   val hasReady = readyMask.reduce(_ || _)
-  val readyIdx = PriorityEncoder(readyMask)
+  val oldestReadyMask = (0 until IssueEntries).map { i =>
+    val thisDist = entries(i).robIdx - io.robHead
+    val hasOlderReady = (0 until IssueEntries).map { j =>
+      val otherDist = entries(j).robIdx - io.robHead
+      readyMask(j) && otherDist < thisDist
+    }.reduce(_ || _)
+    readyMask(i) && !hasOlderReady
+  }
+  val readyIdx = PriorityEncoder(oldestReadyMask)
   val memoryOrderBlocked = hasRawReady && !hasReady
 
   val canSelect = hasReady && !io.flush.valid &&
@@ -175,9 +183,9 @@ class IssueQueue extends Module {
   io.enqReady := canEnq && !io.flush.valid
 
   // enq 时如果 CDB 同周期广播且匹配，直接置 ready
-  val enqRs1Wakeup = io.enq.bits.usesRs1 && io.cdb.valid &&
+  val enqRs1Wakeup = io.enq.bits.usesRs1 && io.enq.bits.prs1 =/= 0.U && io.cdb.valid &&
                      io.enq.bits.prs1 === io.cdb.bits.pdst
-  val enqRs2Wakeup = io.enq.bits.usesRs2 && io.cdb.valid &&
+  val enqRs2Wakeup = io.enq.bits.usesRs2 && io.enq.bits.prs2 =/= 0.U && io.cdb.valid &&
                      io.enq.bits.prs2 === io.cdb.bits.pdst
 
   when(io.enq.valid && canEnq && !io.flush.valid && !io.flushBranchMask.valid) {
@@ -204,8 +212,8 @@ class IssueQueue extends Module {
   // 把就绪项捕获进发射缓冲，同时从 IssueQueue 删除。
   when(canSelect) {
     val e = entries(readyIdx)
-    val rs1Bypass = e.usesRs1 && io.cdb.valid && e.prs1 === io.cdb.bits.pdst
-    val rs2Bypass = e.usesRs2 && io.cdb.valid && e.prs2 === io.cdb.bits.pdst
+    val rs1Bypass = e.usesRs1 && e.prs1 =/= 0.U && io.cdb.valid && e.prs1 === io.cdb.bits.pdst
+    val rs2Bypass = e.usesRs2 && e.prs2 =/= 0.U && io.cdb.valid && e.prs2 === io.cdb.bits.pdst
     deqValidReg := true.B
     deqBitsReg.uop        := e.uop
     deqBitsReg.pc         := e.pc

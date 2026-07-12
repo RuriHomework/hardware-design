@@ -35,6 +35,7 @@ class StoreBuffer extends Module {
     val load = Input(Valid(new Bundle {
       val robIdx = UInt(RobIdWidth.W)
       val addr = UInt(PcWidth.W)
+      val mask = UInt(4.W)
     }))
     val loadWait = Output(Bool())
     val loadForward = Output(Valid(UInt(XLen.W)))
@@ -93,18 +94,20 @@ class StoreBuffer extends Module {
       e.bits.addr(PcWidth - 1, 2) === loadWord
   }
   val olderPartialSameWord = entries.zip(olderSameWord).map { case (e, same) =>
-    same && e.bits.wmask =/= "b1111".U
+    val overlap = (e.bits.wmask & io.load.bits.mask).orR
+    val coversLoad = (e.bits.wmask & io.load.bits.mask) === io.load.bits.mask
+    same && overlap && !coversLoad
   }
-  val fullForwardCandidates = entries.zip(olderSameWord).map { case (e, same) =>
-    same && e.bits.wmask === "b1111".U
+  val forwardCandidates = entries.zip(olderSameWord).map { case (e, same) =>
+    same && ((e.bits.wmask & io.load.bits.mask) === io.load.bits.mask)
   }
   val youngestForwardMask = (0 until StoreBufferEntries).map { i =>
     val hasYoungerCandidate = (0 until StoreBufferEntries).map { j =>
-      fullForwardCandidates(j) && entries(j).age > entries(i).age
+      forwardCandidates(j) && entries(j).age > entries(i).age
     }.reduce(_ || _)
-    fullForwardCandidates(i) && !hasYoungerCandidate
+    forwardCandidates(i) && !hasYoungerCandidate
   }
-  val hasForward = fullForwardCandidates.reduce(_ || _)
+  val hasForward = forwardCandidates.reduce(_ || _)
   val forwardIdx = PriorityEncoder(youngestForwardMask)
 
   io.loadWait := io.load.valid && olderPartialSameWord.reduce(_ || _)

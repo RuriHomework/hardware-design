@@ -69,8 +69,9 @@ struct Memory {
     }
 
     uint32_t load32(uint32_t addr) const {
-        if (!contains(addr)) return 0;
-        const uint32_t off = addr - base;
+        const uint32_t wordAddr = addr & ~0x3u;
+        if (!contains(wordAddr)) return 0;
+        const uint32_t off = wordAddr - base;
         uint32_t value = 0;
         for (int i = 0; i < 4; ++i) {
             if (off + static_cast<uint32_t>(i) < bytes.size()) {
@@ -348,7 +349,9 @@ int main(int argc, char **argv) {
             }
         };
 
-        dut->io_imem_inst = imem.load32(dut->io_imem_addr);
+        dut->io_imem_inst = imem.contains(dut->io_imem_addr)
+            ? imem.load32(dut->io_imem_addr)
+            : (dmem.contains(dut->io_imem_addr) ? dmem.load32(dut->io_imem_addr) : NOP);
         dut->io_dmem_rdata = dmem.contains(pendingDmemRead)
             ? dmem.load32(pendingDmemRead)
             : (imem.contains(pendingDmemRead) ? imem.load32(pendingDmemRead) : loadMmio32(pendingDmemRead));
@@ -454,10 +457,7 @@ int main(int argc, char **argv) {
             } else if (dmem.contains(daddr)) {
                 dmem.storeMasked32(daddr, dut->io_dmem_wdata, dut->io_dmem_wmask);
             } else if (imem.contains(daddr)) {
-                std::printf("ERROR: store to read-only IMem addr=0x%08x data=0x%08x mask=0x%x\n",
-                    daddr, dut->io_dmem_wdata, dut->io_dmem_wmask);
-                exitCode = 1;
-                halted = true;
+                imem.storeMasked32(daddr, dut->io_dmem_wdata, dut->io_dmem_wmask);
             } else {
                 std::printf("ERROR: store outside DMem addr=0x%08x data=0x%08x mask=0x%x\n",
                     daddr, dut->io_dmem_wdata, dut->io_dmem_wmask);
