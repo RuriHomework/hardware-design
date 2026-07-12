@@ -39,6 +39,7 @@ class Top extends Module {
   val imem = Module(new IMem(sys.env.get("IMEM_HEX").filter(_.nonEmpty)))
   val dmem = Module(new DMem(sys.env.get("DMEM_HEX").filter(_.nonEmpty)))
   val uart = Module(new UartTx(uartClockHz, uartBaud))
+  val uartRx = withReset(!loader.io.running) { Module(new UartRx(uartClockHz, uartBaud)) }
 
   val mmioExit = "h20000000".U(PcWidth.W)
   val mmioUartTx = "h20000004".U(PcWidth.W)
@@ -47,6 +48,7 @@ class Top extends Module {
   val mmioMtimecmpLo = "h20000010".U(PcWidth.W)
   val mmioMtimecmpHi = "h20000014".U(PcWidth.W)
   val mmioUartStatus = "h20000018".U(PcWidth.W)
+  val mmioUartRxData = "h2000001c".U(PcWidth.W)
 
   def maskWrite32(old: UInt, data: UInt, mask: UInt): UInt = {
     Cat((0 until 4).reverse.map { i =>
@@ -66,6 +68,7 @@ class Top extends Module {
   val exitCode = RegInit(0.U(XLen.W))
 
   loader.io.rx := io.uartRx
+  uartRx.io.rx := io.uartRx
 
   core.io.timerInterrupt := running && mtime >= mtimecmp
 
@@ -91,13 +94,31 @@ class Top extends Module {
     pendingReadAddr := daddr
   }
 
+  val uartRxValid = RegInit(false.B)
+  val uartRxData = RegInit(0.U(8.W))
+  val uartRxReadPending = RegNext(running && !dwrite && daddr === mmioUartRxData, false.B)
+  uartRx.io.out.ready := running && (!uartRxValid || uartRxReadPending)
+
+  when(!running) {
+    uartRxValid := false.B
+    uartRxData := 0.U
+  }.elsewhen(uartRx.io.out.fire) {
+    uartRxValid := true.B
+    uartRxData := uartRx.io.out.bits
+  }.elsewhen(uartRxReadPending) {
+    uartRxValid := false.B
+  }
+
   val mmioReadData = WireDefault(0.U(XLen.W))
   switch(pendingReadAddr) {
     is(mmioMtimeLo) { mmioReadData := mtime(31, 0) }
     is(mmioMtimeHi) { mmioReadData := mtime(63, 32) }
     is(mmioMtimecmpLo) { mmioReadData := mtimecmp(31, 0) }
     is(mmioMtimecmpHi) { mmioReadData := mtimecmp(63, 32) }
-    is(mmioUartStatus) { mmioReadData := Cat(0.U(30.W), uart.io.busy, uart.io.in.ready) }
+    is(mmioUartStatus) {
+      mmioReadData := Cat(0.U(27.W), uartRx.io.overrun, uartRx.io.framingError, uartRxValid, uart.io.busy, uart.io.in.ready)
+    }
+    is(mmioUartRxData) { mmioReadData := uartRxData }
   }
   val pendingDmemAccess = pendingReadAddr(31, 16) === "h1000".U
   core.io.dmem.rdata := Mux(pendingDmemAccess, dmem.io.rdata, mmioReadData)

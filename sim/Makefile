@@ -31,6 +31,7 @@ PROG_NAME ?= smoke
 PROG_TEXT ?= $(PROG_DIR)/build/$(PROG_NAME).text.bin
 PROG_DATA ?= $(PROG_DIR)/build/$(PROG_NAME).data.bin
 MAX_CYCLES ?= 500000
+UART_MAX_CYCLES ?= 0
 SIM_ARGS ?=
 
 # Verilator flags
@@ -45,7 +46,7 @@ VFLAGS += -Wno-DECLFILENAME
 VFLAGS += -CFLAGS -std=c++17
 
 # 默认目标：编译并运行仿真
-.PHONY: sim sim-program wave wave-program riscv-tests clean rtl program
+.PHONY: sim sim-program wave wave-program uart-pty uart-pty-run riscv-tests clean rtl program
 
 sim: rtl $(OBJ_DIR)/V$(RTL_TOP)
 	@echo "==> Running simulation"
@@ -66,6 +67,13 @@ wave-program: program rtl $(OBJ_DIR)/V$(RTL_TOP)
 	@echo "==> Running program simulation with VCD trace"
 	ENABLE_TRACE=1 $(OBJ_DIR)/V$(RTL_TOP) +text=$(PROG_TEXT) +data=$(PROG_DATA) +max-cycles=$(MAX_CYCLES) $(SIM_ARGS)
 	@echo "==> VCD waveform: $(CURDIR)/simx.vcd"
+
+uart-pty:
+	@$(MAKE) RTL_TOP=BoardTop TB_SRC=cpp/tb_board_uart_pty.cpp SIM_ARGS="$(SIM_ARGS)" MAX_CYCLES="$(UART_MAX_CYCLES)" uart-pty-run
+
+uart-pty-run: rtl $(OBJ_DIR)/V$(RTL_TOP)
+	@echo "==> Running BoardTop UART PTY simulation"
+	$(OBJ_DIR)/V$(RTL_TOP) +max-cycles=$(MAX_CYCLES) $(SIM_ARGS)
 
 riscv-tests: rtl $(OBJ_DIR)/V$(RTL_TOP)
 	@set -euo pipefail; \

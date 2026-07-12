@@ -69,12 +69,12 @@ def read_ack(fd, timeout, echo_ignored=False):
         if not readable:
             continue
         data = os.read(fd, 1024)
-        for byte in data:
+        for index, byte in enumerate(data):
             if byte == ord("K"):
                 if echo_ignored and ignored:
                     sys.stdout.buffer.write(ignored)
                     sys.stdout.buffer.flush()
-                return
+                return data[index + 1 :]
             if byte == ord("E"):
                 raise RuntimeError("loader returned error")
             ignored.append(byte)
@@ -86,12 +86,12 @@ def read_ack(fd, timeout, echo_ignored=False):
 
 def command(fd, code, payload=b"", timeout=5):
     write_all(fd, code + payload)
-    read_ack(fd, timeout)
+    return read_ack(fd, timeout)
 
 
-def load_region(fd, code, name, data, words, baud):
+def load_region(fd, code, name, data, words, baud, timeout_scale):
     payload = struct.pack("<I", words) + data
-    timeout = max(5, len(payload) * 12 / baud + 5)
+    timeout = max(5, len(payload) * 12 / baud + 5) * timeout_scale
     print(f"load {name}: {len(data)} bytes ({words} words)")
     command(fd, code, payload, timeout)
 
@@ -118,6 +118,7 @@ def main():
     parser.add_argument("--data", default="sim/programs/freertos/build/smoke.data.bin")
     parser.add_argument("--no-clear", action="store_true")
     parser.add_argument("--monitor", type=float, default=5.0)
+    parser.add_argument("--timeout-scale", type=float, default=1.0)
     args = parser.parse_args()
 
     text_data, text_words = padded_words(args.text, IMEM_WORDS)
@@ -131,10 +132,13 @@ def main():
         if not args.no_clear:
             print("clear memories")
             command(fd, b"C", timeout=5)
-        load_region(fd, b"I", "IMEM", text_data, text_words, args.baud)
-        load_region(fd, b"D", "DMEM", data_data, data_words, args.baud)
+        load_region(fd, b"I", "IMEM", text_data, text_words, args.baud, args.timeout_scale)
+        load_region(fd, b"D", "DMEM", data_data, data_words, args.baud, args.timeout_scale)
         print("boot")
-        command(fd, b"B", timeout=5)
+        trailing = command(fd, b"B", timeout=5)
+        if trailing:
+            sys.stdout.buffer.write(trailing)
+            sys.stdout.buffer.flush()
         monitor(fd, args.monitor)
     finally:
         termios.tcsetattr(fd, termios.TCSANOW, old_attrs)
