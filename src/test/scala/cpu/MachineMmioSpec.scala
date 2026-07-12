@@ -109,4 +109,44 @@ class MachineMmioSpec extends AnyFlatSpec with ChiselScalatestTester with Matche
       c.io.timerInterrupt.expect(true.B)
     }
   }
+
+  it should "increment mtime at the configured timebase rate" in {
+    test(new MachineMmio(enableQemuVirt = true, mtimeDivider = 6)) { c =>
+      init(c)
+      val mtime = BigInt("0200bff8", 16)
+      val before = read(c, mtime)
+      c.clock.step(11)
+      val after = read(c, mtime)
+      after - before shouldBe 2
+    }
+  }
+
+  it should "reassert THRE after a full TX FIFO gains space" in {
+    test(new MachineMmio(enableQemuVirt = true, uartFifoDepth = 16)) { c =>
+      init(c)
+      c.io.uartTx.ready.poke(false.B)
+      val uart = BigInt("10000000", 16)
+      val claim = BigInt("0c200004", 16)
+
+      write(c, BigInt("0c000028", 16), 1)
+      write(c, BigInt("0c002000", 16), 1 << 10)
+      writeByte(c, uart + 1, 2) // IER.ETBEI
+
+      c.clock.step(2)
+      read(c, claim).toInt shouldBe 10
+      read(c, uart + 2) // Reading IIR acknowledges the current THRE interrupt.
+      write(c, claim, 10)
+
+      for (i <- 0 until 16) {
+        writeByte(c, uart, i)
+      }
+      c.clock.step(2)
+      c.io.externalInterrupt.expect(false.B)
+
+      c.io.uartTx.ready.poke(true.B)
+      c.clock.step(4)
+      c.io.externalInterrupt.expect(true.B)
+      read(c, claim).toInt shouldBe 10
+    }
+  }
 }

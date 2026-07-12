@@ -147,7 +147,24 @@ class BackendStructuresSpec extends AnyFlatSpec with ChiselScalatestTester {
         f.io.allocReq.poke(true.B)
         f.clock.step()
       }
-      f.io.allocPdst.expect(32.U)
+      f.io.allocPdst.expect(63.U)
+    }
+  }
+
+  it should "retain a simultaneous free when the free list starts full" in {
+    test(new FreeList) { f =>
+      f.io.restore.valid.poke(false.B)
+      f.io.allocReq.poke(true.B)
+      f.io.freeReq.poke(true.B)
+      f.io.freePdst.poke(7.U)
+
+      assert(f.io.checkpoint.freeMask.peek().litValue.bitCount == 32)
+      f.clock.step()
+      assert(f.io.checkpoint.freeMask.peek().litValue.bitCount == 32)
+
+      f.io.allocReq.poke(false.B)
+      f.io.freeReq.poke(false.B)
+      f.io.allocPdst.expect(7.U)
     }
   }
 

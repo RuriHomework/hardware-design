@@ -40,6 +40,7 @@ export IMEM_HEX
 export DMEM_HEX
 export PRELOAD_BOOT
 export BOARD_CLOCK_HZ
+export MTIME_HZ
 export UART_BAUD
 export IMEM_WORDS
 export DMEM_WORDS
@@ -150,6 +151,7 @@ $(RTL_CONFIG): FORCE
 	  printf '%s\n' "DMEM_HEX=$(DMEM_HEX)"; \
 	  printf '%s\n' "PRELOAD_BOOT=$(PRELOAD_BOOT)"; \
 	  printf '%s\n' "BOARD_CLOCK_HZ=$(BOARD_CLOCK_HZ)"; \
+	  printf '%s\n' "MTIME_HZ=$(MTIME_HZ)"; \
 	  printf '%s\n' "UART_BAUD=$(UART_BAUD)"; \
 	  printf '%s\n' "IMEM_WORDS=$(IMEM_WORDS)"; \
 	  printf '%s\n' "DMEM_WORDS=$(DMEM_WORDS)"; \

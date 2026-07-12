@@ -25,8 +25,12 @@ class Top extends Module {
 
   val uartClockHz = sys.env.get("BOARD_CLOCK_HZ").flatMap(s => scala.util.Try(s.toInt).toOption).getOrElse(60000000)
   val uartBaud = sys.env.get("UART_BAUD").flatMap(s => scala.util.Try(s.toInt).toOption).getOrElse(115200)
+  val mtimeHz = sys.env.get("MTIME_HZ").flatMap(s => scala.util.Try(s.toInt).toOption).getOrElse(10000000)
   val preloadBoot = sys.env.get("PRELOAD_BOOT").contains("1")
   val qemuVirtMmio = sys.env.get("QEMU_VIRT_MMIO").contains("1")
+  require(!qemuVirtMmio || (mtimeHz > 0 && uartClockHz % mtimeHz == 0),
+    s"BOARD_CLOCK_HZ ($uartClockHz) must be divisible by MTIME_HZ ($mtimeHz)")
+  val mtimeDivider = if (qemuVirtMmio) uartClockHz / mtimeHz else 1
   val mmioDebug = sys.env.get("MMIO_DEBUG").contains("1")
 
   val loader = Module(new SerialLoader(uartClockHz, uartBaud, IMemDepth, DMemDepth))
@@ -41,7 +45,9 @@ class Top extends Module {
   val dmem = Module(new DMem(sys.env.get("DMEM_HEX").filter(_.nonEmpty)))
   val uartTx = Module(new UartTx(uartClockHz, uartBaud))
   val uartRx = withReset(!running) { Module(new UartRx(uartClockHz, uartBaud)) }
-  val mmio = withReset(!running) { Module(new MachineMmio(qemuVirtMmio, mmioDebug)) }
+  val mmio = withReset(!running) {
+    Module(new MachineMmio(qemuVirtMmio, mmioDebug, mtimeDivider = mtimeDivider))
+  }
 
   loader.io.rx := io.uartRx
   uartRx.io.rx := io.uartRx

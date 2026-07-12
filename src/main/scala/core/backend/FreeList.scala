@@ -9,7 +9,7 @@ import isa.CoreConfig._
 /**
  * 自由列表：管理可用物理寄存器号。
  *
- * 结构：环形队列 + 头尾指针。
+ * 结构：每个物理寄存器对应一个空闲位。
  * 初始时物理寄存器 32..63 都是空闲（0..31 对应逻辑寄存器初始映射）。
  *
  * 接口：
@@ -19,9 +19,6 @@ import isa.CoreConfig._
  * 单发射简化：每周期最多 1 alloc + 1 free。
  */
 class FreeList extends Module {
-  // 空闲队列容量 = NumPhysRegs - NumLogicalRegs
-  val FreeDepth = NumPhysRegs - NumLogicalRegs  // 32
-
   val io = IO(new Bundle {
     val allocReq  = Input(Bool())        // 需要分配（指令有 rd）
     val allocAvail= Output(Bool())       // 有空闲
@@ -31,55 +28,36 @@ class FreeList extends Module {
     val freePdst  = Input(UInt(LogNumPhys.W))
 
     val checkpoint = Output(new Bundle {
-      val freeList = Vec(FreeDepth, UInt(LogNumPhys.W))
-      val head = UInt(log2Ceil(FreeDepth).W)
-      val tail = UInt(log2Ceil(FreeDepth).W)
-      val count = UInt(log2Ceil(FreeDepth + 1).W)
+      val freeMask = UInt(NumPhysRegs.W)
     })
     val restore = Input(Valid(new Bundle {
-      val freeList = Vec(FreeDepth, UInt(LogNumPhys.W))
-      val head = UInt(log2Ceil(FreeDepth).W)
-      val tail = UInt(log2Ceil(FreeDepth).W)
-      val count = UInt(log2Ceil(FreeDepth + 1).W)
+      val freeMask = UInt(NumPhysRegs.W)
     }))
   })
 
-  val freeList  = RegInit(VecInit(
-    (NumLogicalRegs until NumPhysRegs).map(_.U(LogNumPhys.W))))
-  val head = RegInit(0.U(log2Ceil(FreeDepth).W))
-  val tail = RegInit(0.U(log2Ceil(FreeDepth).W))
-  val count = RegInit(FreeDepth.U(log2Ceil(FreeDepth + 1).W))
-
-  val canAlloc = count > 0.U
-  val canFree  = count < FreeDepth.U
+  private val initialFreeMask = (((BigInt(1) << NumPhysRegs) - 1) ^
+    ((BigInt(1) << NumLogicalRegs) - 1)).U(NumPhysRegs.W)
+  val freeMask = RegInit(initialFreeMask)
+  val canAlloc = freeMask.orR
+  val allocPdst = PriorityEncoder(freeMask)
 
   io.allocAvail := canAlloc
-  io.allocPdst  := freeList(head)
-  io.checkpoint.freeList := freeList
-  io.checkpoint.head := head
-  io.checkpoint.tail := tail
-  io.checkpoint.count := count
+  io.allocPdst := allocPdst
+  io.checkpoint.freeMask := freeMask
 
-  // 同时 alloc + free
   val doAlloc = io.allocReq && canAlloc
-  val doFree  = io.freeReq  && canFree
+  val doFree = io.freeReq && io.freePdst =/= 0.U
+  val allocBit = UIntToOH(allocPdst, NumPhysRegs)
+  val freeBit = UIntToOH(io.freePdst, NumPhysRegs)
+  val afterAlloc = Mux(doAlloc, freeMask & ~allocBit, freeMask)
+  val nextFreeMask = Mux(doFree, afterAlloc | freeBit, afterAlloc)
 
   when(io.restore.valid) {
-    freeList := io.restore.bits.freeList
-    head := io.restore.bits.head
-    tail := io.restore.bits.tail
-    count := io.restore.bits.count
-  }.elsewhen(doAlloc && !doFree) {
-    head  := Mux(head === (FreeDepth - 1).U, 0.U, head + 1.U)
-    count := count - 1.U
-  }.elsewhen(doFree && !doAlloc) {
-    freeList(tail) := io.freePdst
-    tail  := Mux(tail === (FreeDepth - 1).U, 0.U, tail + 1.U)
-    count := count + 1.U
-  }.elsewhen(doAlloc && doFree) {
-    freeList(tail) := io.freePdst
-    head := Mux(head === (FreeDepth - 1).U, 0.U, head + 1.U)
-    tail := Mux(tail === (FreeDepth - 1).U, 0.U, tail + 1.U)
-    // count 不变
+    freeMask := io.restore.bits.freeMask & ~1.U(NumPhysRegs.W)
+  }.otherwise {
+    freeMask := nextFreeMask
   }
+
+  assert(!doFree || !freeMask(io.freePdst) || (doAlloc && allocPdst === io.freePdst),
+    "physical register returned to FreeList twice")
 }

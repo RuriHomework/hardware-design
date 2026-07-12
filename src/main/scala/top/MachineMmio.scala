@@ -6,7 +6,14 @@ import chisel3.util._
 import isa.CoreConfig._
 
 /** One-cycle MMIO model for the board-local devices and QEMU virt machine devices. */
-class MachineMmio(enableQemuVirt: Boolean, debug: Boolean = false) extends Module {
+class MachineMmio(
+  enableQemuVirt: Boolean,
+  debug: Boolean = false,
+  uartFifoDepth: Int = 16,
+  mtimeDivider: Int = 1
+) extends Module {
+  require(uartFifoDepth > 0)
+  require(mtimeDivider > 0)
   val io = IO(new Bundle {
     val read = Input(Valid(UInt(PcWidth.W)))
     val readData = Output(UInt(XLen.W))
@@ -61,13 +68,14 @@ class MachineMmio(enableQemuVirt: Boolean, debug: Boolean = false) extends Modul
   def alignByte(data: UInt, addr: UInt): UInt = data.pad(32) << (addr(1, 0) << 3)
 
   val mtime = RegInit(0.U(64.W))
+  val mtimePrescaler = if (mtimeDivider > 1) Some(RegInit(0.U(log2Ceil(mtimeDivider).W))) else None
   val mtimecmp = RegInit("hffffffffffffffff".U(64.W))
   val msip = RegInit(false.B)
   val exitValid = RegInit(false.B)
   val exitCode = RegInit(0.U(XLen.W))
 
-  val uartRxQueue = Module(new Queue(UInt(8.W), 16))
-  val uartTxQueue = Module(new Queue(UInt(8.W), 16))
+  val uartRxQueue = Module(new Queue(UInt(8.W), uartFifoDepth))
+  val uartTxQueue = Module(new Queue(UInt(8.W), uartFifoDepth))
   uartRxQueue.io.enq <> io.uartRx
   io.uartTx <> uartTxQueue.io.deq
 
@@ -79,6 +87,8 @@ class MachineMmio(enableQemuVirt: Boolean, debug: Boolean = false) extends Modul
   val uartDlm = RegInit(0.U(8.W))
   val uartTxIrqLatch = RegInit(false.B)
   val txWriteLastCycle = RegNext(uartTxQueue.io.enq.fire, false.B)
+  val txReadyPrev = RegNext(uartTxQueue.io.enq.ready, true.B)
+  val txReadyBecameAvailable = !txReadyPrev && uartTxQueue.io.enq.ready
 
   val plicPriority = RegInit(0.U(3.W))
   val plicEnable = RegInit(false.B)
@@ -127,7 +137,7 @@ class MachineMmio(enableQemuVirt: Boolean, debug: Boolean = false) extends Modul
     uartTxIrqLatch := false.B
   }.elsewhen(readUartIir && uartTxPending && !uartRxPending) {
     uartTxIrqLatch := false.B
-  }.elsewhen(txWriteLastCycle && uartTxQueue.io.enq.ready) {
+  }.elsewhen((txWriteLastCycle && uartTxQueue.io.enq.ready) || txReadyBecameAvailable) {
     uartTxIrqLatch := true.B
   }
 
@@ -208,7 +218,14 @@ class MachineMmio(enableQemuVirt: Boolean, debug: Boolean = false) extends Modul
   }
   io.readData := readData
 
-  val nextMtime = WireDefault(mtime + 1.U)
+  val mtimeTick = mtimePrescaler match {
+    case Some(counter) => counter === (mtimeDivider - 1).U
+    case None => true.B
+  }
+  mtimePrescaler.foreach { counter =>
+    counter := Mux(mtimeTick, 0.U, counter + 1.U)
+  }
+  val nextMtime = WireDefault(Mux(mtimeTick, mtime + 1.U, mtime))
   val nextMtimecmp = WireDefault(mtimecmp)
   when(io.write.valid) {
     when(writeAddr === localExit) {
