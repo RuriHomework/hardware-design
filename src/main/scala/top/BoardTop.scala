@@ -19,12 +19,9 @@ class BoardTop extends RawModule {
 
     top.io.uartRx := uartRx
 
-    greenLED := Mux(top.io.loaderActive, false.B,
-      Mux(top.io.exitValid, top.io.exitCode === 0.U, top.io.dbgCommitValid))
+    greenLED := !top.io.loaderActive && (!top.io.exitValid || top.io.exitCode === 0.U)
     redLED := Mux(top.io.loaderActive, top.io.loaderError,
-      Mux(top.io.exitValid, top.io.exitCode =/= 0.U,
-      top.io.dbgCommitWritesReg ^ top.io.dbgCommitData.xorR ^ top.io.dbgCommit.pc.xorR)
-    )
+      top.io.exitValid && top.io.exitCode =/= 0.U)
     uartTx := top.io.uartTx
   }
 }

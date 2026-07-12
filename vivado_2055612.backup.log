@@ -1,0 +1,109 @@
+#-----------------------------------------------------------
+# Vivado v2024.2 (64-bit)
+# SW Build 5239630 on Fri Nov 08 22:34:34 MST 2024
+# IP Build 5239520 on Sun Nov 10 16:12:51 MST 2024
+# SharedData Build 5239561 on Fri Nov 08 14:39:27 MST 2024
+# Start of session at: Sun Jul 12 15:34:01 2026
+# Process ID         : 2055612
+# Current directory  : /home/ruri/hardware-design
+# Command line       : vivado -mode batch -source build/vivado/data1_13bit_trigger_one.tcl -tclargs 3 send -journal build/vivado/data1_13bit_3_send.jou -log build/vivado/data1_13bit_3_send.log
+# Log file           : /home/ruri/hardware-design/vivado.log
+# Journal file       : /home/ruri/hardware-design/vivado.jou
+# Running On         : navi
+# Platform           : unknown
+# Operating System   : unknown
+# Processor Detail   : 12th Gen Intel(R) Core(TM) i5-12400
+# CPU Frequency      : 2496.000 MHz
+# CPU Physical cores : 6
+# CPU Logical cores  : 6
+# Host memory        : 8308 MB
+# Swap memory        : 8589 MB
+# Total Virtual      : 16898 MB
+# Available Virtual  : 13842 MB
+#-----------------------------------------------------------
+source build/vivado/data1_13bit_trigger_one.tcl
+# set repo_root [file normalize [file join [file dirname [info script]] "../.."]]
+# set bit [lindex $argv 0]
+# set do_send [lindex $argv 1]
+# if {$bit eq ""} {
+#   error "usage: data1_13bit_trigger_one.tcl <sample_bit> <send|idle>"
+# }
+# if {$do_send eq ""} {
+#   set do_send idle
+# }
+# set bit_file [file join $repo_root "build" "vivado" "Data1PinIla.bit"]
+# set ltx_file [file join $repo_root "build" "vivado" "Data1PinIla.ltx"]
+# proc probe_pattern_for_sample_bit {bit} {
+#   set chars {}
+#   for {set i 12} {$i >= 0} {incr i -1} {
+#     if {$i == $bit} {
+#       lappend chars 0
+#     } else {
+#       lappend chars X
+#     }
+#   }
+#   return "eq13'b[join $chars ""]"
+# }
+# proc send_zero_burst {} {
+#   exec python3 -c {
+# import os, termios, time
+# fd = os.open('/dev/ttyUSB0', os.O_RDWR | os.O_NOCTTY | os.O_SYNC)
+# old = termios.tcgetattr(fd)
+# try:
+#     t = termios.tcgetattr(fd)
+#     t[0] = t[1] = t[3] = 0
+#     t[2] = termios.CS8 | termios.CREAD | termios.CLOCAL
+#     t[4] = termios.B115200
+#     t[5] = termios.B115200
+#     termios.tcsetattr(fd, termios.TCSANOW, t)
+#     end = time.monotonic() + 0.7
+#     while time.monotonic() < end:
+#         os.write(fd, b'\x00' * 256)
+#         termios.tcdrain(fd)
+# finally:
+#     termios.tcsetattr(fd, termios.TCSANOW, old)
+#     os.close(fd)
+# } &
+# }
+# open_hw_manager
+# connect_hw_server
+INFO: [Labtools 27-2285] Connecting to hw_server url TCP:localhost:3121
+INFO: [Labtools 27-3415] Connecting to cs_server url TCP:localhost:0
+INFO: [Labtools 27-3417] Launching cs_server...
+INFO: [Labtools 27-2221] Launch Output:
+
+
+******** Xilinx cs_server v2024.2.0
+  ****** Build date   : Oct 30 2024-18:19:07
+    **** Build number : 2024.2.1730312347
+      ** Copyright 2017-2022 Xilinx, Inc. All Rights Reserved.
+      ** Copyright 2022-2026 Advanced Micro Devices, Inc. All Rights Reserved.
+
+
+
+# open_hw_target
+INFO: [Labtoolstcl 44-466] Opening hw_target localhost:3121/xilinx_tcf/Digilent/210251A08870
+# set dev [lindex [get_hw_devices xc7z010*] 0]
+# current_hw_device $dev
+# set_property PROGRAM.FILE $bit_file $dev
+# set_property PROBES.FILE $ltx_file $dev
+# program_hw_devices $dev
+INFO: [Labtools 27-3164] End of startup status: HIGH
+# refresh_hw_device $dev
+INFO: [Labtools 27-2302] Device xc7z010 (JTAG device index = 1) is programmed with a design that has 1 ILA core(s).
+# set ila [lindex [get_hw_ilas] 0]
+# set probe [get_hw_probes sample]
+# set_property CONTROL.DATA_DEPTH 16 $ila
+# set_property CONTROL.TRIGGER_POSITION 0 $ila
+# set pattern [probe_pattern_for_sample_bit $bit]
+# set_property TRIGGER_COMPARE_VALUE $pattern $probe
+# run_hw_ila $ila
+INFO: [Labtools 27-1964] The ILA core 'hw_ila_1' trigger was armed at 2026-Jul-12 15:34:07
+# if {$do_send eq "send"} {
+#   send_zero_burst
+# }
+# set ok [catch {wait_on_hw_ila -timeout 2 $ila} msg]
+# set status [get_property STATUS.CORE_STATUS $ila]
+# puts "TRIGGER13 bit=$bit mode=$do_send pattern=$pattern catch=$ok status=$status msg=$msg"
+TRIGGER13 bit=3 mode=send pattern=eq13'bXXXXXXXXX0XXX catch=0 status=FULL msg=
+INFO: [Common 17-206] Exiting Vivado at Sun Jul 12 15:34:07 2026...
