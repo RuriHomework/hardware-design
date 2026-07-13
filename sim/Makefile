@@ -4,7 +4,6 @@
 #   make sim          # 生成 Core Verilog + 编译 + 运行
 #   make wave         # 同上，并生成 VCD 波形到 sim/simx.vcd
 #   make sim RTL_TOP=Counter TB_SRC=cpp/tb_counter.cpp
-#   make sim USE_TMPFS=0  # 禁用 /dev/shm 编译工作目录
 #   make clean        # 清理仿真中间产物
 #
 # 前置:
@@ -28,11 +27,6 @@ RTL_SOURCES := $(shell find $(PROJ_ROOT)/src/main/scala $(PROJ_ROOT)/project -ty
 
 # Verilator 工作目录
 OBJ_DIR   := $(CURDIR)/obj_dir
-USE_TMPFS ?= 1
-WORKSPACE_ID := $(shell printf '%s' '$(PROJ_ROOT)' | cksum | cut -d' ' -f1)
-TMPFS_ROOT ?= /dev/shm/hardware-design-$(shell id -u)-$(WORKSPACE_ID)
-TMPFS_TMP_DIR := $(TMPFS_ROOT)/tmp
-TMPFS_OBJ_DIR := $(TMPFS_ROOT)/verilator/$(RTL_TOP)
 TB_SRC    ?= cpp/tb_core.cpp
 PROG_DIR  ?= programs/baremetal
 PROG_NAME ?= smoke
@@ -70,7 +64,7 @@ VFLAGS += -Wno-PINCONNECTEMPTY
 VFLAGS += -CFLAGS -std=c++17
 
 # 默认目标：编译并运行仿真
-.PHONY: sim sim-program wave wave-program uart-pty uart-pty-run preload-pty preload-pty-run riscv-tests clean clean-all tmpfs-info tmpfs-clean rtl program FORCE
+.PHONY: sim sim-program wave wave-program uart-pty uart-pty-run preload-pty preload-pty-run riscv-tests clean clean-all rtl program FORCE
 
 sim: rtl $(OBJ_DIR)/V$(RTL_TOP)
 	@echo "==> Running simulation"
@@ -179,37 +173,15 @@ rtl: $(RTL_FILE)
 
 $(RTL_FILE): $(RTL_SOURCES) $(RTL_CONFIG) Makefile
 	@echo "==> Elaborating Chisel -> SystemVerilog"
-	@if test "$(USE_TMPFS)" = 1; then mkdir -p "$(TMPFS_TMP_DIR)"; fi
-	cd $(PROJ_ROOT) && \
-	  TMPDIR="$$(if test "$(USE_TMPFS)" = 1; then printf '%s' '$(TMPFS_TMP_DIR)'; else printf '%s' "$${TMPDIR:-/tmp}"; fi)" \
-	  sbt "runMain Elaborate --top $(RTL_TOP)"
+	cd $(PROJ_ROOT) && sbt "runMain Elaborate --top $(RTL_TOP)"
 
 # Verilator 编译
 $(OBJ_DIR)/V$(RTL_TOP): $(RTL_FILE) $(TB_SRC) Makefile
 	@echo "==> Compiling with Verilator"
-	@mkdir -p "$(OBJ_DIR)"
-	@if test "$(USE_TMPFS)" = 1; then \
-	  test -d /dev/shm && test -w /dev/shm || \
-	    (echo "ERROR: /dev/shm is unavailable; use USE_TMPFS=0" >&2; exit 1); \
-	  mkdir -p "$(TMPFS_TMP_DIR)" "$(TMPFS_OBJ_DIR)"; \
-	  TMPDIR="$(TMPFS_TMP_DIR)" \
-	    verilator $(VFLAGS) --cc $(RTL_FILE) --exe "$(abspath $(TB_SRC))" --build -Mdir "$(TMPFS_OBJ_DIR)"; \
-	  install -m 755 "$(TMPFS_OBJ_DIR)/V$(RTL_TOP)" "$@"; \
-	else \
-	  verilator $(VFLAGS) --cc $(RTL_FILE) --exe "$(abspath $(TB_SRC))" --build -Mdir "$(OBJ_DIR)"; \
-	fi
-
-tmpfs-info:
-	@echo "USE_TMPFS=$(USE_TMPFS)"
-	@echo "TMPFS_ROOT=$(TMPFS_ROOT)"
-	@if test -d "$(TMPFS_ROOT)"; then du -sh "$(TMPFS_ROOT)"; else echo "tmpfs cache is empty"; fi
-
-tmpfs-clean:
-	rm -rf "$(TMPFS_ROOT)"
+	verilator $(VFLAGS) --cc $(RTL_FILE) --exe $(TB_SRC) --build -Mdir $(OBJ_DIR)
 
 clean:
 	rm -rf $(OBJ_DIR)
-	@if test "$(USE_TMPFS)" = 1; then rm -rf "$(TMPFS_ROOT)/verilator"; fi
 
 clean-all: clean
 	rm -f $(RTL_FILE) $(RTL_CONFIG)
