@@ -18,6 +18,12 @@
             metals
             circt
             verilator
+            llvmPackages.clang-unwrapped
+            llvmPackages.llvm
+            llvmPackages.lld
+            pkgsCross.riscv32-embedded.stdenv.cc
+            kconfig-frontends
+            genromfs
           ];
 
           shellHook = ''

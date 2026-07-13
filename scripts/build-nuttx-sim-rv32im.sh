@@ -315,6 +315,7 @@ disable_config CONFIG_ARCH_QPFPU
 disable_config CONFIG_DISABLE_FLOAT
 disable_config CONFIG_FS_HOSTFS
 disable_config CONFIG_FS_PROCFS
+set_config CONFIG_FS_TMPFS y
 disable_config CONFIG_RISCV_SEMIHOSTING_HOSTFS
 disable_config CONFIG_RISCV_TOOLCHAIN_GNU_RV64
 disable_config CONFIG_RISCV_TOOLCHAIN_GNU_RV32

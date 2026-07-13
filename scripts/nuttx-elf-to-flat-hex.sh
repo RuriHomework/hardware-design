@@ -11,7 +11,10 @@ OUT="$2"
 BYTES="${3:-1048576}"
 BIN="${OUT%.hex}.bin"
 
-OBJCOPY="${OBJCOPY:-riscv32-none-elf-objcopy}"
+OBJCOPY="${NUTTX_OBJCOPY:-${OBJCOPY:-}}"
+if [ -z "$OBJCOPY" ] || [ "$OBJCOPY" = objcopy ]; then
+  OBJCOPY=riscv32-none-elf-objcopy
+fi
 
 "$OBJCOPY" -O binary "$ELF" "$BIN"
 truncate -s "$BYTES" "$BIN"
